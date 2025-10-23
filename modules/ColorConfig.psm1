@@ -38,6 +38,7 @@ function Write-ColorOutput {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
         [string]$Message,
 
         [Parameter(Mandatory = $false)]
@@ -73,6 +74,7 @@ function Write-SuccessMessage {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
         [string]$Message
     )
 
@@ -93,6 +95,7 @@ function Write-ErrorMessage {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
         [string]$Message
     )
 
@@ -113,6 +116,7 @@ function Write-WarningMessage {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
         [string]$Message
     )
 
@@ -133,6 +137,7 @@ function Write-InfoMessage {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
         [string]$Message
     )
 
@@ -153,6 +158,7 @@ function Write-ProgressMessage {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, ValueFromPipeline = $true)]
+        [AllowEmptyString()]
         [string]$Message
     )
 
