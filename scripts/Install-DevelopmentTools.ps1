@@ -356,6 +356,41 @@ function Install-Chocolatey {
     }
 }
 
+function Get-BaseVersionFromExpression {
+    <#
+    .SYNOPSIS
+        Extracts the base version number from a version expression
+    .DESCRIPTION
+        Strips version range operators (~, ^, >=, >, <=, <) to get the base version number.
+        This is needed for package managers that don't support semantic versioning operators.
+    .PARAMETER VersionExpression
+        The version expression (e.g., "~1.2.3", "^2.0.0", ">=3.1.0", "1.2.3", "latest")
+    .EXAMPLE
+        Get-BaseVersionFromExpression -VersionExpression "~1.22.22"
+        Returns: "1.22.22"
+    .EXAMPLE
+        Get-BaseVersionFromExpression -VersionExpression ">=2.0.6"
+        Returns: "2.0.6"
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionExpression
+    )
+
+    # Return "latest" as-is
+    if ($VersionExpression -eq "latest") {
+        return "latest"
+    }
+
+    # Strip operators: ~, ^, >=, >, <=, <
+    $baseVersion = $VersionExpression -replace '[\^~]|>=|>|<=|<', ''
+    $baseVersion = $baseVersion.Trim()
+
+    return $baseVersion
+}
+
 function Install-ChocolateyPackage {
     <#
     .SYNOPSIS
@@ -379,11 +414,16 @@ function Install-ChocolateyPackage {
     Write-ProgressMessage "Installing $ToolName via Chocolatey..."
 
     try {
+        # Extract base version (strip semantic version operators that Chocolatey doesn't understand)
+        $chocoVersion = Get-BaseVersionFromExpression -VersionExpression $Version
+
+        Write-InfoMessage "Requesting Chocolatey to install $PackageName version: $chocoVersion (from expression: $Version)"
+
         $chocoArgs = @("install", $PackageName, "-y")
 
         # Add version if not "latest"
-        if ($Version -ne "latest") {
-            $chocoArgs += "--version=$Version"
+        if ($chocoVersion -ne "latest") {
+            $chocoArgs += "--version=$chocoVersion"
         }
 
         if ($Force) {
@@ -398,31 +438,53 @@ function Install-ChocolateyPackage {
 
         # Install package and capture output
         $output = & choco @chocoArgs 2>&1
+        $outputString = $output | Out-String
 
         if ($LASTEXITCODE -eq 0) {
             Write-SuccessMessage "$ToolName installed successfully"
             # Get the installed version
             $installedVer = Get-ChocoPackageVersion -PackageName $PackageName
-            Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $Version })
+            Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $chocoVersion })
         }
         else {
             # Display detailed error information
             Write-ErrorLog -Message "Failed to install $ToolName (exit code: $LASTEXITCODE)"
+            Write-ColorOutput "" -Color White
+            Write-ColorOutput "Chocolatey Error Details:" -Color Red
+            Write-ColorOutput "  Command: choco $($chocoArgs -join ' ')" -Color DarkGray
+            Write-ColorOutput "  Exit Code: $LASTEXITCODE" -Color DarkRed
+            Write-ColorOutput "" -Color White
 
-            # Show relevant error details from chocolatey output
-            $errorLines = $output | Where-Object { $_ -match 'ERROR|FAIL|Unable|not found|not installed|invalid' } | Select-Object -First 5
-            if ($errorLines) {
-                Write-ColorOutput "Chocolatey Error Details:" -Color Red
+            # Show relevant error lines from chocolatey output
+            $errorLines = $output | Where-Object { $_ -and $_ -match 'ERROR|error|FAIL|fail|Unable|unable|not found|not installed|invalid|cannot|Cannot' } | Select-Object -First 10
+            if ($errorLines -and $errorLines.Count -gt 0) {
+                Write-ColorOutput "  Error Output:" -Color Red
                 foreach ($line in $errorLines) {
-                    Write-ColorOutput "  $line" -Color DarkRed
+                    $cleanLine = $line.ToString().Trim()
+                    if ($cleanLine) {
+                        Write-ColorOutput "    $cleanLine" -Color DarkRed
+                    }
                 }
             }
+            else {
+                Write-ColorOutput "  No specific error messages found in output." -Color DarkRed
+                Write-ColorOutput "  Full output (last 15 lines):" -Color DarkGray
+                $lastLines = $output | Select-Object -Last 15
+                foreach ($line in $lastLines) {
+                    if ($line) {
+                        Write-ColorOutput "    $line" -Color DarkGray
+                    }
+                }
+            }
+            Write-ColorOutput "" -Color White
 
             Add-FailedTool -Name $ToolName -Reason "Chocolatey exit code: $LASTEXITCODE"
         }
     }
     catch {
         Write-ErrorLog -Message "Exception during $ToolName installation" -Exception $_.Exception
+        Write-ColorOutput "Exception Details:" -Color Red
+        Write-ColorOutput "  $($_.Exception.Message)" -Color DarkRed
         Add-FailedTool -Name $ToolName -Reason $_.Exception.Message
     }
 }
@@ -450,6 +512,11 @@ function Install-PowerShellModule {
     Write-ProgressMessage "Installing $ToolName from PowerShell Gallery..."
 
     try {
+        # Extract base version (strip semantic version operators)
+        $moduleVersion = Get-BaseVersionFromExpression -VersionExpression $Version
+
+        Write-InfoMessage "Requesting PowerShell Gallery to install $ModuleName version: $moduleVersion (from expression: $Version)"
+
         $installParams = @{
             Name               = $ModuleName
             Force              = $true
@@ -467,8 +534,8 @@ function Install-PowerShellModule {
         }
 
         # Add version if not "latest"
-        if ($Version -ne "latest") {
-            $installParams.RequiredVersion = $Version
+        if ($moduleVersion -ne "latest") {
+            $installParams.RequiredVersion = $moduleVersion
         }
 
         # Attempt installation with retry logic for common CI/CD issues
@@ -490,7 +557,7 @@ function Install-PowerShellModule {
                 Write-SuccessMessage "$ToolName installed successfully"
                 # Get the installed version
                 $installedVer = Get-PowerShellModuleVersion -ModuleName $ModuleName
-                Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $Version })
+                Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $moduleVersion })
             }
             catch {
                 $retryCount++
@@ -518,7 +585,7 @@ function Install-PowerShellModule {
                 Install-Module @installParams -ErrorAction Stop
                 Write-SuccessMessage "$ToolName installed successfully (license workaround applied)"
                 $installedVer = Get-PowerShellModuleVersion -ModuleName $ModuleName
-                Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $Version })
+                Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $moduleVersion })
             }
             catch {
                 Write-ErrorLog -Message "Failed to install $ToolName even with license workaround" -Exception $_.Exception
@@ -558,6 +625,11 @@ function Install-NodeViaNvm {
     Write-ProgressMessage "Installing Node.js $Version via NVM..."
 
     try {
+        # Extract base version (NVM doesn't understand semantic version operators)
+        $nvmVersion = Get-BaseVersionFromExpression -VersionExpression $Version
+
+        Write-InfoMessage "Requesting NVM to install Node.js version: $nvmVersion (from expression: $Version)"
+
         # Refresh environment to ensure nvm is available
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
 
@@ -572,30 +644,47 @@ function Install-NodeViaNvm {
         }
 
         # Install Node version and capture output
-        Write-InfoMessage "Running: nvm install $Version"
-        $nvmOutput = nvm install $Version 2>&1
+        Write-InfoMessage "Running: nvm install $nvmVersion"
+        $nvmOutput = nvm install $nvmVersion 2>&1
 
         if ($LASTEXITCODE -ne 0) {
-            Write-ErrorLog -Message "Failed to install Node.js $Version via NVM (exit code: $LASTEXITCODE)"
+            Write-ErrorLog -Message "Failed to install Node.js $nvmVersion via NVM (exit code: $LASTEXITCODE)"
+            Write-ColorOutput "" -Color White
             Write-ColorOutput "NVM Error Details:" -Color Red
-            $errorLines = $nvmOutput | Where-Object { $_ -match 'ERROR|error|could not|failed|unable' } | Select-Object -First 5
-            if ($errorLines) {
+            Write-ColorOutput "  Command: nvm install $nvmVersion" -Color DarkGray
+            Write-ColorOutput "  Exit Code: $LASTEXITCODE" -Color DarkRed
+            Write-ColorOutput "" -Color White
+
+            $errorLines = $nvmOutput | Where-Object { $_ -and $_ -match 'ERROR|error|could not|failed|unable|Cannot|cannot|not found' } | Select-Object -First 10
+            if ($errorLines -and $errorLines.Count -gt 0) {
+                Write-ColorOutput "  Error Output:" -Color Red
                 foreach ($line in $errorLines) {
-                    Write-ColorOutput "  $line" -Color DarkRed
+                    $cleanLine = $line.ToString().Trim()
+                    if ($cleanLine) {
+                        Write-ColorOutput "    $cleanLine" -Color DarkRed
+                    }
                 }
             } else {
-                Write-ColorOutput "  Exit code: $LASTEXITCODE" -Color DarkRed
+                Write-ColorOutput "  Full output (last 10 lines):" -Color DarkGray
+                $lastLines = $nvmOutput | Select-Object -Last 10
+                foreach ($line in $lastLines) {
+                    if ($line) {
+                        Write-ColorOutput "    $line" -Color DarkGray
+                    }
+                }
             }
+            Write-ColorOutput "" -Color White
+
             Add-FailedTool -Name "Node.js" -Reason "NVM install failed (exit code: $LASTEXITCODE)"
             return
         }
 
         # Set as default
-        Write-InfoMessage "Setting Node.js $Version as default"
-        nvm use $Version 2>&1 | Out-Null
+        Write-InfoMessage "Setting Node.js $nvmVersion as default"
+        nvm use $nvmVersion 2>&1 | Out-Null
 
         if ($LASTEXITCODE -ne 0) {
-            Write-WarningLog "Failed to set Node.js $Version as default"
+            Write-WarningLog "Failed to set Node.js $nvmVersion as default"
         }
 
         # Verify installation
