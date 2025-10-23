@@ -138,6 +138,7 @@ function Format-ToolTable {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [array]$Tools,
 
         [Parameter(Mandatory = $true)]
@@ -784,9 +785,16 @@ try {
     Write-ColorOutput "" -Color White
 
     # Installed Tools
-    Write-SectionHeader "Installed Tools"
-    Format-ToolTable -Tools $script:installedTools -Type "Installed"
-    Write-ColorOutput "" -Color White
+    if ($script:installedTools.Count -gt 0) {
+        Write-SectionHeader "Installed Tools"
+        Format-ToolTable -Tools $script:installedTools -Type "Installed"
+        Write-ColorOutput "" -Color White
+    }
+    else {
+        Write-SectionHeader "Installed Tools"
+        Write-ColorOutput "  None" -Color DarkGray
+        Write-ColorOutput "" -Color White
+    }
 
     # Updated Tools
     if ($script:updatedTools.Count -gt 0) {
