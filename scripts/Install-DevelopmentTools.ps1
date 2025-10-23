@@ -232,13 +232,10 @@ function Initialize-PSGallery {
             Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
             Write-SuccessMessage "PSGallery registered and set as trusted"
         }
-
-        return $true
     }
     catch {
         Write-WarningLog "Failed to configure PSGallery: $($_.Exception.Message)"
         # Non-fatal, continue execution
-        return $false
     }
 }
 
@@ -293,19 +290,15 @@ function Install-PowerShellGet {
 
         # Import the module
         Import-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
-
-        return $true
     }
     catch {
         Write-WarningLog "Failed to install/update PowerShellGet: $($_.Exception.Message)"
         # Check if we can continue with existing version
-        if ($currentPSGet) {
-            Write-InfoMessage "Continuing with existing PowerShellGet version"
-            return $true
+        if (-not $currentPSGet) {
+            Write-ErrorLog -Message "PowerShellGet is required but could not be installed" -Fatal
         }
         else {
-            Write-ErrorLog -Message "PowerShellGet is required but could not be installed" -Fatal
-            return $false
+            Write-InfoMessage "Continuing with existing PowerShellGet version"
         }
     }
 }
@@ -326,7 +319,7 @@ function Install-Chocolatey {
         if ($chocoCmd) {
             $chocoVersion = choco --version 2>$null
             Write-SuccessMessage "Chocolatey is already installed (version: $chocoVersion)"
-            return $true
+            return
         }
 
         Write-InfoMessage "Chocolatey not found. Installing Chocolatey..."
@@ -353,17 +346,13 @@ function Install-Chocolatey {
             # Configure Chocolatey
             choco feature enable -n allowGlobalConfirmation 2>&1 | Out-Null
             Write-InfoMessage "Chocolatey global confirmation enabled"
-
-            return $true
         }
         else {
             Write-ErrorLog -Message "Chocolatey installation verification failed" -Fatal
-            return $false
         }
     }
     catch {
         Write-ErrorLog -Message "Failed to install Chocolatey" -Exception $_.Exception -Fatal
-        return $false
     }
 }
 
@@ -404,30 +393,37 @@ function Install-ChocolateyPackage {
         # Add CI/CD and TeamCity-friendly flags
         $chocoArgs += "--accept-license"           # Accept license agreements automatically
         $chocoArgs += "--no-progress"              # Disable progress bars (cleaner CI logs)
-        $chocoArgs += "--limit-output"             # Limit output for cleaner CI logs
         $chocoArgs += "--allow-empty-checksums"    # Allow packages with empty checksums
         $chocoArgs += "--ignore-checksums"         # Skip checksum verification if needed
 
-        # Install package
-        & choco @chocoArgs 2>&1 | Out-Null
+        # Install package and capture output
+        $output = & choco @chocoArgs 2>&1
 
         if ($LASTEXITCODE -eq 0) {
             Write-SuccessMessage "$ToolName installed successfully"
             # Get the installed version
             $installedVer = Get-ChocoPackageVersion -PackageName $PackageName
             Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $Version })
-            return $true
         }
         else {
+            # Display detailed error information
             Write-ErrorLog -Message "Failed to install $ToolName (exit code: $LASTEXITCODE)"
-            Add-FailedTool -Name $ToolName -Reason "Exit code: $LASTEXITCODE"
-            return $false
+
+            # Show relevant error details from chocolatey output
+            $errorLines = $output | Where-Object { $_ -match 'ERROR|FAIL|Unable|not found|not installed|invalid' } | Select-Object -First 5
+            if ($errorLines) {
+                Write-ColorOutput "Chocolatey Error Details:" -Color Red
+                foreach ($line in $errorLines) {
+                    Write-ColorOutput "  $line" -Color DarkRed
+                }
+            }
+
+            Add-FailedTool -Name $ToolName -Reason "Chocolatey exit code: $LASTEXITCODE"
         }
     }
     catch {
         Write-ErrorLog -Message "Exception during $ToolName installation" -Exception $_.Exception
         Add-FailedTool -Name $ToolName -Reason $_.Exception.Message
-        return $false
     }
 }
 
@@ -507,8 +503,6 @@ function Install-PowerShellModule {
                 }
             }
         }
-
-        return $true
     }
     catch {
         # Handle common errors in CI/CD environments
@@ -525,24 +519,27 @@ function Install-PowerShellModule {
                 Write-SuccessMessage "$ToolName installed successfully (license workaround applied)"
                 $installedVer = Get-PowerShellModuleVersion -ModuleName $ModuleName
                 Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $Version })
-                return $true
             }
             catch {
                 Write-ErrorLog -Message "Failed to install $ToolName even with license workaround" -Exception $_.Exception
+                Write-ColorOutput "PowerShell Gallery Error Details:" -Color Red
+                Write-ColorOutput "  $($_.Exception.Message)" -Color DarkRed
                 Add-FailedTool -Name $ToolName -Reason "License acceptance failed"
-                return $false
             }
         }
         elseif ($errorMessage -like "*is already installed*") {
             Write-InfoMessage "$ToolName is already installed"
             $installedVer = Get-PowerShellModuleVersion -ModuleName $ModuleName
             Add-SkippedTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { "Unknown" }) -Reason "Already installed"
-            return $true
         }
         else {
             Write-ErrorLog -Message "Failed to install $ToolName" -Exception $_.Exception
+            Write-ColorOutput "PowerShell Gallery Error Details:" -Color Red
+            Write-ColorOutput "  $($_.Exception.Message)" -Color DarkRed
+            if ($_.Exception.InnerException) {
+                Write-ColorOutput "  Inner Exception: $($_.Exception.InnerException.Message)" -Color DarkRed
+            }
             Add-FailedTool -Name $ToolName -Reason $_.Exception.Message
-            return $false
         }
     }
 }
@@ -567,18 +564,30 @@ function Install-NodeViaNvm {
         # Check if NVM is available
         $nvmCmd = Get-Command nvm -ErrorAction SilentlyContinue
         if (-not $nvmCmd) {
-            Write-ErrorLog -Message "NVM is not available. Please ensure NVM is installed first." -Fatal
-            return $false
+            Write-ErrorLog -Message "NVM is not available. Please ensure NVM is installed first."
+            Write-ColorOutput "NVM Error Details:" -Color Red
+            Write-ColorOutput "  NVM command not found. Ensure NVM for Windows is installed and in PATH." -Color DarkRed
+            Add-FailedTool -Name "Node.js" -Reason "NVM not available"
+            return
         }
 
-        # Install Node version
+        # Install Node version and capture output
         Write-InfoMessage "Running: nvm install $Version"
-        nvm install $Version 2>&1 | Out-Null
+        $nvmOutput = nvm install $Version 2>&1
 
         if ($LASTEXITCODE -ne 0) {
-            Write-ErrorLog -Message "Failed to install Node.js $Version via NVM"
-            Add-FailedTool -Name "Node.js" -Reason "NVM install failed"
-            return $false
+            Write-ErrorLog -Message "Failed to install Node.js $Version via NVM (exit code: $LASTEXITCODE)"
+            Write-ColorOutput "NVM Error Details:" -Color Red
+            $errorLines = $nvmOutput | Where-Object { $_ -match 'ERROR|error|could not|failed|unable' } | Select-Object -First 5
+            if ($errorLines) {
+                foreach ($line in $errorLines) {
+                    Write-ColorOutput "  $line" -Color DarkRed
+                }
+            } else {
+                Write-ColorOutput "  Exit code: $LASTEXITCODE" -Color DarkRed
+            }
+            Add-FailedTool -Name "Node.js" -Reason "NVM install failed (exit code: $LASTEXITCODE)"
+            return
         }
 
         # Set as default
@@ -596,17 +605,17 @@ function Install-NodeViaNvm {
         if ($nodeVersion) {
             Write-SuccessMessage "Node.js installed successfully (version: $nodeVersion)"
             Add-InstalledTool -Name "Node.js" -Version $nodeVersion.TrimStart('v')
-            return $true
         }
         else {
             Write-WarningLog "Node.js installation could not be verified"
-            return $false
+            Add-FailedTool -Name "Node.js" -Reason "Installation verification failed"
         }
     }
     catch {
         Write-ErrorLog -Message "Exception during Node.js installation" -Exception $_.Exception
+        Write-ColorOutput "NVM Error Details:" -Color Red
+        Write-ColorOutput "  $($_.Exception.Message)" -Color DarkRed
         Add-FailedTool -Name "Node.js" -Reason $_.Exception.Message
-        return $false
     }
 }
 
