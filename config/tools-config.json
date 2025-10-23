@@ -1,0 +1,118 @@
+{
+  "developmentTools": {
+    "chocolatey": {
+      "version": "latest",
+      "allowGlobalConfiguration": true,
+      "source": "script",
+      "description": "Package manager for Windows"
+    },
+    "nvm": {
+      "version": "1.1.5",
+      "packageName": "nvm",
+      "source": "chocolatey",
+      "description": "Node Version Manager for Windows"
+    },
+    "node": {
+      "version": "18.19.1",
+      "source": "nvm",
+      "setAsDefault": true,
+      "description": "Node.js JavaScript runtime"
+    },
+    "yarn": {
+      "version": "1.22.22",
+      "packageName": "yarn",
+      "source": "chocolatey",
+      "description": "JavaScript package manager"
+    },
+    "dotnetcore-sdk": {
+      "version": "3.1.201",
+      "packageName": "dotnetcore-sdk",
+      "source": "chocolatey",
+      "description": ".NET Core SDK"
+    },
+    "awscli": {
+      "version": "2.0.6",
+      "packageName": "awscli",
+      "source": "chocolatey",
+      "description": "AWS Command Line Interface"
+    },
+    "7zip": {
+      "version": "22.1",
+      "packageName": "7zip.install",
+      "source": "chocolatey",
+      "description": "File archiver with high compression ratio"
+    },
+    "netfx-devpack": {
+      "version": "4.7.2",
+      "packageName": "netfx-4.7.2-devpack",
+      "source": "chocolatey",
+      "description": ".NET Framework Developer Pack"
+    },
+    "curl": {
+      "version": "latest",
+      "packageName": "curl",
+      "source": "chocolatey",
+      "description": "Command line tool for transferring data"
+    },
+    "k6": {
+      "version": "latest",
+      "packageName": "k6",
+      "source": "chocolatey",
+      "description": "Modern load testing tool"
+    },
+    "docker-desktop": {
+      "version": "4.12.0",
+      "packageName": "docker-desktop",
+      "source": "chocolatey",
+      "description": "Docker Desktop for Windows"
+    },
+    "psake": {
+      "version": "4.9.0",
+      "packageName": "psake",
+      "source": "chocolatey",
+      "description": "PowerShell-based build automation tool"
+    },
+    "aws.tools.installer": {
+      "version": "1.0.2.4",
+      "packageName": "AWS.Tools.Installer",
+      "source": "powershellgallery",
+      "description": "AWS Tools for PowerShell Installer"
+    },
+    "aws.tools.s3": {
+      "version": "4.1.39.0",
+      "packageName": "AWS.Tools.S3",
+      "source": "powershellgallery",
+      "description": "AWS S3 Tools for PowerShell"
+    },
+    "sqlserver": {
+      "version": "21.1.18221",
+      "packageName": "SqlServer",
+      "source": "powershellgallery",
+      "description": "SQL Server PowerShell module"
+    }
+  },
+  "systemRequirements": {
+    "minimumWindowsVersion": "10.0.0.0",
+    "minimumPowerShellVersion": "5.1",
+    "minimumRAM_GB": 8,
+    "minimumDiskSpace_GB": 50,
+    "requiresAdmin": true
+  },
+  "installationOrder": [
+    "chocolatey",
+    "nvm",
+    "node",
+    "yarn",
+    "dotnetcore-sdk",
+    "awscli",
+    "7zip",
+    "netfx-devpack",
+    "curl",
+    "k6",
+    "docker-desktop",
+    "psake",
+    "aws.tools.installer",
+    "aws.tools.s3",
+    "sqlserver"
+  ]
+}
