@@ -1,5 +1,4 @@
 #Requires -Version 5.1
-#Requires -RunAsAdministrator
 
 <#
 .SYNOPSIS
@@ -7,10 +6,11 @@
 .DESCRIPTION
     Installs and configures development tools including Node.js, .NET, AWS CLI, Docker, and more
     based on versions specified in config/tools-config.json
+
+    NOTE: This script is called by setup.ps1 which handles admin checks and system requirements.
+    Do not run this script directly unless you know what you're doing.
 .PARAMETER ConfigPath
     Path to the configuration file (default: ..\config\tools-config.json)
-.PARAMETER SkipSystemCheck
-    Skip system requirements validation
 .EXAMPLE
     .\Install-DevelopmentTools.ps1
 .EXAMPLE
@@ -20,10 +20,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$ConfigPath = "$PSScriptRoot\..\config\tools-config.json",
-
-    [Parameter(Mandatory = $false)]
-    [switch]$SkipSystemCheck
+    [string]$ConfigPath = "$PSScriptRoot\..\config\tools-config.json"
 )
 
 # Script initialization
@@ -755,35 +752,16 @@ function Install-DevelopmentTools {
 try {
     Write-HeaderMessage "Development Environment Setup - Tool Installation"
 
-    # Step 1: Verify admin privileges
-    Write-StepMessage -StepNumber 1 -TotalSteps 6 -Message "Verifying administrator privileges"
-    Assert-IsAdmin -ScriptName "Install-DevelopmentTools.ps1"
-
-    # Step 2: Initialize PSGallery and prerequisites (critical for CI/CD)
-    Write-StepMessage -StepNumber 2 -TotalSteps 6 -Message "Configuring PSGallery and NuGet provider"
+    # Step 1: Initialize PSGallery and prerequisites (critical for CI/CD)
+    Write-StepMessage -StepNumber 1 -TotalSteps 3 -Message "Configuring PSGallery and NuGet provider"
     Initialize-PSGallery
 
-    # Step 3: Gather and display system information
-    Write-StepMessage -StepNumber 3 -TotalSteps 6 -Message "Gathering system information"
-    $systemInfo = Get-SystemInformation
-    Show-SystemInformation -SystemInfo $systemInfo
-
-    # Step 4: Check system requirements
-    if (-not $SkipSystemCheck) {
-        Write-StepMessage -StepNumber 4 -TotalSteps 6 -Message "Validating system requirements"
-        Test-SystemRequirements -ConfigPath $ConfigPath
-        Test-InternetConnection | Out-Null
-    }
-    else {
-        Write-WarningMessage "System requirements check skipped"
-    }
-
-    # Step 5: Install development tools
-    Write-StepMessage -StepNumber 5 -TotalSteps 6 -Message "Installing development tools"
+    # Step 2: Install development tools
+    Write-StepMessage -StepNumber 2 -TotalSteps 3 -Message "Installing development tools"
     Install-DevelopmentTools -ConfigPath $ConfigPath
 
-    # Step 6: Display summary
-    Write-StepMessage -StepNumber 6 -TotalSteps 6 -Message "Generating summary report"
+    # Step 3: Display summary
+    Write-StepMessage -StepNumber 3 -TotalSteps 3 -Message "Generating summary report"
 
     Write-HeaderMessage "DEVELOPMENT TOOLS INSTALLATION - SUMMARY"
 
@@ -841,7 +819,6 @@ try {
         exit 1
     }
 
-    Write-SuccessMessage "Development tools installation completed successfully!"
     exit 0
 }
 catch {

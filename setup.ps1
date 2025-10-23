@@ -221,7 +221,10 @@ function Show-FinalSummary {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [bool]$Success
+        [bool]$Success,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$LocalDeveloper
     )
 
     $duration = (Get-Date) - $script:SetupStartTime
@@ -239,16 +242,28 @@ function Show-FinalSummary {
 
     if ($Success) {
         Write-SuccessMessage "`nSetup completed successfully!"
-        Write-InfoMessage "NOTE: Close and reopen your terminal to refresh environment variables"
+
+        # Only show terminal restart note in LocalDeveloper mode
+        if ($LocalDeveloper) {
+            Write-InfoMessage "NOTE: Close and reopen your terminal to refresh environment variables"
+        }
     }
     else {
         Write-ColorOutput "`nSETUP FAILED" -Color Red
         Write-ColorOutput "============" -Color Red
         Write-ColorOutput "Please review the errors above and:" -Color White
-        Write-ColorOutput "  1. Address any system requirement issues" -Color White
-        Write-ColorOutput "  2. Check your internet connection" -Color White
-        Write-ColorOutput "  3. Review the configuration file for correctness" -Color White
-        Write-ColorOutput "  4. Re-run this script after resolving issues" -Color White
+
+        if ($LocalDeveloper) {
+            Write-ColorOutput "  1. Address any system requirement issues" -Color White
+            Write-ColorOutput "  2. Check your internet connection" -Color White
+            Write-ColorOutput "  3. Review the configuration file for correctness" -Color White
+            Write-ColorOutput "  4. Re-run this script after resolving issues" -Color White
+        }
+        else {
+            Write-ColorOutput "  1. Review the configuration file for correctness" -Color White
+            Write-ColorOutput "  2. Check the error logs above" -Color White
+            Write-ColorOutput "  3. Re-run this script after resolving issues" -Color White
+        }
     }
 
     # Show error summary if there were errors
@@ -293,7 +308,7 @@ try {
     $installSuccess = Invoke-DevelopmentToolsInstallation -ConfigPath $ConfigPath
 
     # Display final summary
-    Show-FinalSummary -Success $installSuccess
+    Show-FinalSummary -Success $installSuccess -LocalDeveloper:$LocalDeveloper
 
     # Exit with appropriate code
     if ($installSuccess) {
@@ -305,7 +320,7 @@ try {
 }
 catch {
     Write-ErrorLog -Message "Fatal error in setup script" -Exception $_.Exception -Fatal
-    Show-FinalSummary -Success $false
+    Show-FinalSummary -Success $false -LocalDeveloper:$LocalDeveloper
     exit 1
 }
 finally {

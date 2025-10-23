@@ -24,43 +24,43 @@
       "description": "PowerShell module for discovering and installing modules from PSGallery"
     },
     "nvm": {
-      "version": "1.1.5",
+      "version": "~1.1.5",
       "packageName": "nvm",
       "source": "chocolatey",
       "description": "Node Version Manager for Windows"
     },
     "node": {
-      "version": "18.19.1",
+      "version": "~18.19.1",
       "source": "nvm",
       "setAsDefault": true,
       "description": "Node.js JavaScript runtime"
     },
     "yarn": {
-      "version": "1.22.22",
+      "version": "~1.22.22",
       "packageName": "yarn",
       "source": "chocolatey",
       "description": "JavaScript package manager"
     },
     "dotnetcore-sdk": {
-      "version": "3.1.201",
+      "version": "~3.1.201",
       "packageName": "dotnetcore-sdk",
       "source": "chocolatey",
       "description": ".NET Core SDK"
     },
     "awscli": {
-      "version": "2.0.6",
+      "version": "~2.0.6",
       "packageName": "awscli",
       "source": "chocolatey",
       "description": "AWS Command Line Interface"
     },
     "7zip": {
-      "version": "22.1",
+      "version": "~22.1.0",
       "packageName": "7zip.install",
       "source": "chocolatey",
       "description": "File archiver with high compression ratio"
     },
     "netfx-devpack": {
-      "version": "4.8.0.20190930",
+      "version": "~4.8.0",
       "packageName": "netfx-4.8-devpack",
       "source": "chocolatey",
       "description": ".NET Framework Developer Pack"
@@ -78,31 +78,31 @@
       "description": "Modern load testing tool"
     },
     "docker-desktop": {
-      "version": "4.12.0",
+      "version": "~4.12.0",
       "packageName": "docker-desktop",
       "source": "chocolatey",
       "description": "Docker Desktop for Windows"
     },
     "psake": {
-      "version": "4.9.0",
+      "version": "~4.9.0",
       "packageName": "psake",
       "source": "powershellgallery",
       "description": "PowerShell-based build automation tool"
     },
     "aws.tools.installer": {
-      "version": "1.0.2.4",
+      "version": "~1.0.2",
       "packageName": "AWS.Tools.Installer",
       "source": "powershellgallery",
       "description": "AWS Tools for PowerShell Installer"
     },
     "aws.tools.s3": {
-      "version": "4.1.39.0",
+      "version": "~4.1.39",
       "packageName": "AWS.Tools.S3",
       "source": "powershellgallery",
       "description": "AWS S3 Tools for PowerShell"
     },
     "sqlserver": {
-      "version": "21.1.18221",
+      "version": "~21.1.18221",
       "packageName": "SqlServer",
       "source": "powershellgallery",
       "description": "SQL Server PowerShell module"
