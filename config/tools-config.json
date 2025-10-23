@@ -6,6 +6,12 @@
       "source": "script",
       "description": "Package manager for Windows"
     },
+    "powershellget": {
+      "version": "latest",
+      "packageName": "PowerShellGet",
+      "source": "bootstrap",
+      "description": "PowerShell module for discovering and installing modules from PSGallery"
+    },
     "nvm": {
       "version": "1.1.5",
       "packageName": "nvm",
@@ -69,7 +75,7 @@
     "psake": {
       "version": "4.9.0",
       "packageName": "psake",
-      "source": "chocolatey",
+      "source": "powershellgallery",
       "description": "PowerShell-based build automation tool"
     },
     "aws.tools.installer": {
@@ -100,6 +106,7 @@
   },
   "installationOrder": [
     "chocolatey",
+    "powershellget",
     "nvm",
     "node",
     "yarn",

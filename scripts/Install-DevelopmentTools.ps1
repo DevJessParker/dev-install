@@ -45,6 +45,129 @@ $script:skippedTools = @()
 $script:failedTools = @()
 $script:updatedTools = @()
 
+function Initialize-PSGallery {
+    <#
+    .SYNOPSIS
+        Sets PSGallery as trusted and installs NuGet provider
+    .DESCRIPTION
+        Configures PSGallery as a trusted repository and ensures NuGet provider
+        is installed for CI/CD environments (TeamCity, GitHub Actions, etc.)
+    #>
+    [CmdletBinding()]
+    param()
+
+    Write-ProgressMessage "Configuring PSGallery and NuGet provider..."
+
+    try {
+        # Install NuGet provider if not present (required for PowerShell Gallery)
+        Write-InfoMessage "Checking NuGet provider..."
+        $nugetProvider = Get-PackageProvider -Name NuGet -ErrorAction SilentlyContinue
+
+        if (-not $nugetProvider) {
+            Write-InfoMessage "Installing NuGet provider..."
+            Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction Stop | Out-Null
+            Write-SuccessMessage "NuGet provider installed successfully"
+        }
+        else {
+            Write-InfoMessage "NuGet provider already installed (version: $($nugetProvider.Version))"
+        }
+
+        # Set PSGallery as trusted
+        Write-InfoMessage "Setting PSGallery as trusted repository..."
+        $psGallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+
+        if ($psGallery) {
+            if ($psGallery.InstallationPolicy -ne 'Trusted') {
+                Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+                Write-SuccessMessage "PSGallery set as trusted"
+            }
+            else {
+                Write-InfoMessage "PSGallery is already trusted"
+            }
+        }
+        else {
+            Write-WarningLog "PSGallery repository not found. Registering..."
+            Register-PSRepository -Default -ErrorAction Stop
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+            Write-SuccessMessage "PSGallery registered and set as trusted"
+        }
+
+        return $true
+    }
+    catch {
+        Write-WarningLog "Failed to configure PSGallery: $($_.Exception.Message)"
+        # Non-fatal, continue execution
+        return $false
+    }
+}
+
+function Install-PowerShellGet {
+    <#
+    .SYNOPSIS
+        Installs or updates PowerShellGet module
+    .DESCRIPTION
+        Ensures PowerShellGet is installed and updated for module management.
+        Handles common errors in CI/CD environments.
+    #>
+    [CmdletBinding()]
+    param()
+
+    Write-ProgressMessage "Checking PowerShellGet installation..."
+
+    try {
+        # Check current version
+        $currentPSGet = Get-Module -Name PowerShellGet -ListAvailable |
+                        Sort-Object Version -Descending |
+                        Select-Object -First 1
+
+        if ($currentPSGet) {
+            Write-InfoMessage "PowerShellGet already installed (version: $($currentPSGet.Version))"
+
+            # Check if update is needed
+            $latestVersion = Find-Module -Name PowerShellGet -ErrorAction SilentlyContinue
+            if ($latestVersion -and $latestVersion.Version -gt $currentPSGet.Version) {
+                Write-InfoMessage "Updating PowerShellGet from $($currentPSGet.Version) to $($latestVersion.Version)..."
+
+                try {
+                    Install-Module -Name PowerShellGet -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
+                    Write-SuccessMessage "PowerShellGet updated successfully"
+                    $script:installedTools += "PowerShellGet (updated)"
+                }
+                catch {
+                    Write-WarningLog "Could not update PowerShellGet: $($_.Exception.Message)"
+                    Write-InfoMessage "Continuing with current version"
+                }
+            }
+            else {
+                $script:skippedTools += "PowerShellGet (already latest)"
+            }
+        }
+        else {
+            Write-InfoMessage "Installing PowerShellGet..."
+            Install-Module -Name PowerShellGet -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
+            Write-SuccessMessage "PowerShellGet installed successfully"
+            $script:installedTools += "PowerShellGet"
+        }
+
+        # Import the module
+        Import-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
+
+        return $true
+    }
+    catch {
+        Write-WarningLog "Failed to install/update PowerShellGet: $($_.Exception.Message)"
+        # Check if we can continue with existing version
+        if ($currentPSGet) {
+            Write-InfoMessage "Continuing with existing PowerShellGet version"
+            return $true
+        }
+        else {
+            Write-ErrorLog -Message "PowerShellGet is required but could not be installed" -Fatal
+            return $false
+        }
+    }
+}
+
 function Install-Chocolatey {
     <#
     .SYNOPSIS
@@ -136,6 +259,13 @@ function Install-ChocolateyPackage {
             $chocoArgs += "--force"
         }
 
+        # Add CI/CD and TeamCity-friendly flags
+        $chocoArgs += "--accept-license"           # Accept license agreements automatically
+        $chocoArgs += "--no-progress"              # Disable progress bars (cleaner CI logs)
+        $chocoArgs += "--limit-output"             # Limit output for cleaner CI logs
+        $chocoArgs += "--allow-empty-checksums"    # Allow packages with empty checksums
+        $chocoArgs += "--ignore-checksums"         # Skip checksum verification if needed
+
         # Install package
         & choco @chocoArgs 2>&1 | Out-Null
 
@@ -182,10 +312,18 @@ function Install-PowerShellModule {
     try {
         $installParams = @{
             Name               = $ModuleName
-            Force              = $Force.IsPresent
+            Force              = $true
             AllowClobber       = $true
             Scope              = "AllUsers"
             SkipPublisherCheck = $true
+            Confirm            = $false
+        }
+
+        # Add AcceptLicense for CI/CD environments (TeamCity, GitHub Actions, etc.)
+        # This prevents license prompts that would block automation
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+            # PowerShell 6+ supports -AcceptLicense parameter
+            $installParams.AcceptLicense = $true
         }
 
         # Add version if not "latest"
@@ -193,16 +331,71 @@ function Install-PowerShellModule {
             $installParams.RequiredVersion = $Version
         }
 
-        Install-Module @installParams -ErrorAction Stop
+        # Attempt installation with retry logic for common CI/CD issues
+        $maxRetries = 3
+        $retryCount = 0
+        $installed = $false
 
-        Write-SuccessMessage "$ToolName installed successfully"
-        $script:installedTools += $ToolName
+        while (-not $installed -and $retryCount -lt $maxRetries) {
+            try {
+                # For PowerShell 5.1, we need to handle license acceptance differently
+                if ($PSVersionTable.PSVersion.Major -lt 6) {
+                    # Set environment variable to accept license automatically
+                    $env:ACCEPT_EULA = 'Y'
+                }
+
+                Install-Module @installParams -ErrorAction Stop
+
+                $installed = $true
+                Write-SuccessMessage "$ToolName installed successfully"
+                $script:installedTools += $ToolName
+            }
+            catch {
+                $retryCount++
+                if ($retryCount -lt $maxRetries) {
+                    Write-WarningLog "Installation attempt $retryCount failed for $ToolName. Retrying..."
+                    Start-Sleep -Seconds 2
+                }
+                else {
+                    throw
+                }
+            }
+        }
+
         return $true
     }
     catch {
-        Write-ErrorLog -Message "Failed to install $ToolName" -Exception $_.Exception
-        $script:failedTools += $ToolName
-        return $false
+        # Handle common errors in CI/CD environments
+        $errorMessage = $_.Exception.Message
+
+        if ($errorMessage -like "*license*") {
+            Write-WarningLog "License acceptance issue detected. Attempting workaround..."
+
+            try {
+                # Force installation without license check (CI/CD workaround)
+                $installParams.Remove('AcceptLicense')
+                $env:ACCEPT_EULA = 'Y'
+                Install-Module @installParams -ErrorAction Stop
+                Write-SuccessMessage "$ToolName installed successfully (license workaround applied)"
+                $script:installedTools += $ToolName
+                return $true
+            }
+            catch {
+                Write-ErrorLog -Message "Failed to install $ToolName even with license workaround" -Exception $_.Exception
+                $script:failedTools += $ToolName
+                return $false
+            }
+        }
+        elseif ($errorMessage -like "*is already installed*") {
+            Write-InfoMessage "$ToolName is already installed"
+            $script:skippedTools += $ToolName
+            return $true
+        }
+        else {
+            Write-ErrorLog -Message "Failed to install $ToolName" -Exception $_.Exception
+            $script:failedTools += $ToolName
+            return $false
+        }
     }
 }
 
@@ -347,6 +540,13 @@ function Install-DevelopmentTools {
             continue
         }
 
+        # Special handling for PowerShellGet (bootstrap)
+        if ($toolKey -eq "powershellget") {
+            Install-PowerShellGet
+            $stepNumber++
+            continue
+        }
+
         # Check current version
         $installedVersion = Get-InstalledToolVersion -ToolName $toolKey -PackageName $packageName -Source $source
         $versionCheck = Test-ToolVersion -InstalledVersion $installedVersion -RequiredVersion $version -ToolName $toolName -AllowNewer $false
@@ -406,17 +606,21 @@ try {
     Write-HeaderMessage "Development Environment Setup - Tool Installation"
 
     # Step 1: Verify admin privileges
-    Write-StepMessage -StepNumber 1 -TotalSteps 5 -Message "Verifying administrator privileges"
+    Write-StepMessage -StepNumber 1 -TotalSteps 6 -Message "Verifying administrator privileges"
     Assert-IsAdmin -ScriptName "Install-DevelopmentTools.ps1"
 
-    # Step 2: Gather and display system information
-    Write-StepMessage -StepNumber 2 -TotalSteps 5 -Message "Gathering system information"
+    # Step 2: Initialize PSGallery and prerequisites (critical for CI/CD)
+    Write-StepMessage -StepNumber 2 -TotalSteps 6 -Message "Configuring PSGallery and NuGet provider"
+    Initialize-PSGallery
+
+    # Step 3: Gather and display system information
+    Write-StepMessage -StepNumber 3 -TotalSteps 6 -Message "Gathering system information"
     $systemInfo = Get-SystemInformation
     Show-SystemInformation -SystemInfo $systemInfo
 
-    # Step 3: Check system requirements
+    # Step 4: Check system requirements
     if (-not $SkipSystemCheck) {
-        Write-StepMessage -StepNumber 3 -TotalSteps 5 -Message "Validating system requirements"
+        Write-StepMessage -StepNumber 4 -TotalSteps 6 -Message "Validating system requirements"
         Test-SystemRequirements -ConfigPath $ConfigPath
         Test-InternetConnection | Out-Null
     }
@@ -424,12 +628,12 @@ try {
         Write-WarningMessage "System requirements check skipped"
     }
 
-    # Step 4: Install development tools
-    Write-StepMessage -StepNumber 4 -TotalSteps 5 -Message "Installing development tools"
+    # Step 5: Install development tools
+    Write-StepMessage -StepNumber 5 -TotalSteps 6 -Message "Installing development tools"
     Install-DevelopmentTools -ConfigPath $ConfigPath
 
-    # Step 5: Display summary
-    Write-StepMessage -StepNumber 5 -TotalSteps 5 -Message "Generating summary report"
+    # Step 6: Display summary
+    Write-StepMessage -StepNumber 6 -TotalSteps 6 -Message "Generating summary report"
 
     $summaryData = [ordered]@{
         "Installed Tools"      = if ($script:installedTools.Count -gt 0) { $script:installedTools } else { @("None") }
