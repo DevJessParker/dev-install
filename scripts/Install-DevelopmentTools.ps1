@@ -683,14 +683,14 @@ function Install-DevelopmentTools {
 
         # Special handling for Chocolatey
         if ($toolKey -eq "chocolatey") {
-            Install-Chocolatey
+            Install-Chocolatey | Out-Null
             $stepNumber++
             continue
         }
 
         # Special handling for PowerShellGet (bootstrap)
         if ($toolKey -eq "powershellget") {
-            Install-PowerShellGet
+            Install-PowerShellGet | Out-Null
             $stepNumber++
             continue
         }
@@ -725,14 +725,14 @@ function Install-DevelopmentTools {
         # Install based on source
         switch ($source.ToLower()) {
             "chocolatey" {
-                Install-ChocolateyPackage -PackageName $packageName -Version $version -ToolName $toolName -Force
+                Install-ChocolateyPackage -PackageName $packageName -Version $version -ToolName $toolName -Force | Out-Null
             }
             "powershellgallery" {
-                Install-PowerShellModule -ModuleName $packageName -Version $version -ToolName $toolName -Force
+                Install-PowerShellModule -ModuleName $packageName -Version $version -ToolName $toolName -Force | Out-Null
             }
             "nvm" {
                 # Special handling for Node.js via NVM
-                Install-NodeViaNvm -Version $version
+                Install-NodeViaNvm -Version $version | Out-Null
             }
             default {
                 Write-WarningLog "Unknown installation source: $source for $toolName"
@@ -755,11 +755,11 @@ try {
 
     # Step 1: Initialize PSGallery and prerequisites (critical for CI/CD)
     Write-StepMessage -StepNumber 1 -TotalSteps 3 -Message "Configuring PSGallery and NuGet provider"
-    Initialize-PSGallery
+    Initialize-PSGallery | Out-Null
 
     # Step 2: Install development tools
     Write-StepMessage -StepNumber 2 -TotalSteps 3 -Message "Installing development tools"
-    Install-DevelopmentTools -ConfigPath $ConfigPath
+    Install-DevelopmentTools -ConfigPath $ConfigPath | Out-Null
 
     # Step 3: Display summary
     Write-StepMessage -StepNumber 3 -TotalSteps 3 -Message "Generating summary report"
