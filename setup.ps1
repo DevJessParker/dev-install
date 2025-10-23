@@ -253,30 +253,17 @@ function Show-FinalSummary {
     Write-DevSummary -Title "SETUP COMPLETE - FINAL SUMMARY" -Sections $summaryData
 
     if ($Success) {
-        Write-ColorOutput "`nREQUIRED NEXT STEPS:" -Color Green
-        Write-ColorOutput "===================" -Color Green
-        Write-ColorOutput "1. CLOSE this PowerShell window" -Color White
-        Write-ColorOutput "2. OPEN a new PowerShell window as Administrator" -Color White
-        Write-ColorOutput "3. Run the following commands to verify installations:" -Color White
-        Write-ColorOutput "" -Color White
-        Write-ColorOutput "   choco --version" -Color Cyan
-        Write-ColorOutput "   nvm version" -Color Cyan
-        Write-ColorOutput "   node --version" -Color Cyan
-        Write-ColorOutput "   yarn --version" -Color Cyan
-        Write-ColorOutput "   dotnet --version" -Color Cyan
-        Write-ColorOutput "   aws --version" -Color Cyan
-        Write-ColorOutput "   docker --version" -Color Cyan
-        Write-ColorOutput "" -Color White
-        Write-ColorOutput "4. Review any warnings or errors listed above" -Color White
+        Write-SuccessMessage "`nSetup completed successfully!"
+        Write-InfoMessage "NOTE: Close and reopen your terminal to refresh environment variables"
     }
     else {
         Write-ColorOutput "`nSETUP FAILED" -Color Red
         Write-ColorOutput "============" -Color Red
         Write-ColorOutput "Please review the errors above and:" -Color White
-        Write-ColorOutput "1. Address any system requirement issues" -Color White
-        Write-ColorOutput "2. Check your internet connection" -Color White
-        Write-ColorOutput "3. Review the configuration file for correctness" -Color White
-        Write-ColorOutput "4. Re-run this script after resolving issues" -Color White
+        Write-ColorOutput "  1. Address any system requirement issues" -Color White
+        Write-ColorOutput "  2. Check your internet connection" -Color White
+        Write-ColorOutput "  3. Review the configuration file for correctness" -Color White
+        Write-ColorOutput "  4. Re-run this script after resolving issues" -Color White
     }
 
     # Show error summary if there were errors

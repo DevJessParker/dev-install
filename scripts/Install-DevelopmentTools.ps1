@@ -39,11 +39,154 @@ Import-Module "$modulePath\ErrorHandling.psm1" -Force
 Import-Module "$modulePath\SystemCheck.psm1" -Force
 Import-Module "$modulePath\VersionManagement.psm1" -Force
 
-# Script-level variables
+# Script-level variables (tracking tool installation with versions)
 $script:installedTools = @()
 $script:skippedTools = @()
 $script:failedTools = @()
 $script:updatedTools = @()
+
+function Add-InstalledTool {
+    <#
+    .SYNOPSIS
+        Adds a tool to the installed tools list with version information
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Version = "Unknown"
+    )
+
+    $script:installedTools += [PSCustomObject]@{
+        Name    = $Name
+        Version = $Version
+    }
+}
+
+function Add-SkippedTool {
+    <#
+    .SYNOPSIS
+        Adds a tool to the skipped tools list with version information
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Version = "Unknown",
+
+        [Parameter(Mandatory = $false)]
+        [string]$Reason = "Already installed"
+    )
+
+    $script:skippedTools += [PSCustomObject]@{
+        Name    = $Name
+        Version = $Version
+        Reason  = $Reason
+    }
+}
+
+function Add-UpdatedTool {
+    <#
+    .SYNOPSIS
+        Adds a tool to the updated tools list with version information
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $false)]
+        [string]$OldVersion = "Unknown",
+
+        [Parameter(Mandatory = $false)]
+        [string]$NewVersion = "Unknown"
+    )
+
+    $script:updatedTools += [PSCustomObject]@{
+        Name       = $Name
+        OldVersion = $OldVersion
+        NewVersion = $NewVersion
+    }
+}
+
+function Add-FailedTool {
+    <#
+    .SYNOPSIS
+        Adds a tool to the failed tools list
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Reason = "Installation failed"
+    )
+
+    $script:failedTools += [PSCustomObject]@{
+        Name   = $Name
+        Reason = $Reason
+    }
+}
+
+function Format-ToolTable {
+    <#
+    .SYNOPSIS
+        Formats tool information as a readable table
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [array]$Tools,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Type
+    )
+
+    if ($Tools.Count -eq 0) {
+        Write-ColorOutput "  None" -Color DarkGray
+        return
+    }
+
+    Write-ColorOutput "" -Color White
+
+    switch ($Type) {
+        "Installed" {
+            foreach ($tool in $Tools) {
+                Write-ColorOutput "  $($tool.Name)" -Color Green -NoNewline
+                Write-ColorOutput " - " -Color DarkGray -NoNewline
+                Write-ColorOutput "v$($tool.Version)" -Color Cyan
+            }
+        }
+        "Skipped" {
+            foreach ($tool in $Tools) {
+                Write-ColorOutput "  $($tool.Name)" -Color Yellow -NoNewline
+                Write-ColorOutput " - " -Color DarkGray -NoNewline
+                Write-ColorOutput "v$($tool.Version)" -Color Cyan -NoNewline
+                Write-ColorOutput " ($($tool.Reason))" -Color DarkGray
+            }
+        }
+        "Updated" {
+            foreach ($tool in $Tools) {
+                Write-ColorOutput "  $($tool.Name)" -Color Magenta -NoNewline
+                Write-ColorOutput " - " -Color DarkGray -NoNewline
+                Write-ColorOutput "v$($tool.OldVersion)" -Color Red -NoNewline
+                Write-ColorOutput " → " -Color DarkGray -NoNewline
+                Write-ColorOutput "v$($tool.NewVersion)" -Color Green
+            }
+        }
+        "Failed" {
+            foreach ($tool in $Tools) {
+                Write-ColorOutput "  $($tool.Name)" -Color Red -NoNewline
+                Write-ColorOutput " - $($tool.Reason)" -Color DarkGray
+            }
+        }
+    }
+}
 
 function Initialize-PSGallery {
     <#
@@ -131,7 +274,7 @@ function Install-PowerShellGet {
                 try {
                     Install-Module -Name PowerShellGet -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
                     Write-SuccessMessage "PowerShellGet updated successfully"
-                    $script:installedTools += "PowerShellGet (updated)"
+                    Add-UpdatedTool -Name "PowerShellGet" -OldVersion $currentPSGet.Version -NewVersion $latestVersion.Version
                 }
                 catch {
                     Write-WarningLog "Could not update PowerShellGet: $($_.Exception.Message)"
@@ -139,14 +282,15 @@ function Install-PowerShellGet {
                 }
             }
             else {
-                $script:skippedTools += "PowerShellGet (already latest)"
+                Add-SkippedTool -Name "PowerShellGet" -Version $currentPSGet.Version -Reason "Already latest"
             }
         }
         else {
             Write-InfoMessage "Installing PowerShellGet..."
             Install-Module -Name PowerShellGet -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers -ErrorAction Stop
             Write-SuccessMessage "PowerShellGet installed successfully"
-            $script:installedTools += "PowerShellGet"
+            $latestInstalled = Get-Module -Name PowerShellGet -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
+            Add-InstalledTool -Name "PowerShellGet" -Version $latestInstalled.Version
         }
 
         # Import the module
@@ -271,18 +415,20 @@ function Install-ChocolateyPackage {
 
         if ($LASTEXITCODE -eq 0) {
             Write-SuccessMessage "$ToolName installed successfully"
-            $script:installedTools += $ToolName
+            # Get the installed version
+            $installedVer = Get-ChocoPackageVersion -PackageName $PackageName
+            Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $Version })
             return $true
         }
         else {
             Write-ErrorLog -Message "Failed to install $ToolName (exit code: $LASTEXITCODE)"
-            $script:failedTools += $ToolName
+            Add-FailedTool -Name $ToolName -Reason "Exit code: $LASTEXITCODE"
             return $false
         }
     }
     catch {
         Write-ErrorLog -Message "Exception during $ToolName installation" -Exception $_.Exception
-        $script:failedTools += $ToolName
+        Add-FailedTool -Name $ToolName -Reason $_.Exception.Message
         return $false
     }
 }
@@ -348,7 +494,9 @@ function Install-PowerShellModule {
 
                 $installed = $true
                 Write-SuccessMessage "$ToolName installed successfully"
-                $script:installedTools += $ToolName
+                # Get the installed version
+                $installedVer = Get-PowerShellModuleVersion -ModuleName $ModuleName
+                Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $Version })
             }
             catch {
                 $retryCount++
@@ -377,23 +525,25 @@ function Install-PowerShellModule {
                 $env:ACCEPT_EULA = 'Y'
                 Install-Module @installParams -ErrorAction Stop
                 Write-SuccessMessage "$ToolName installed successfully (license workaround applied)"
-                $script:installedTools += $ToolName
+                $installedVer = Get-PowerShellModuleVersion -ModuleName $ModuleName
+                Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $Version })
                 return $true
             }
             catch {
                 Write-ErrorLog -Message "Failed to install $ToolName even with license workaround" -Exception $_.Exception
-                $script:failedTools += $ToolName
+                Add-FailedTool -Name $ToolName -Reason "License acceptance failed"
                 return $false
             }
         }
         elseif ($errorMessage -like "*is already installed*") {
             Write-InfoMessage "$ToolName is already installed"
-            $script:skippedTools += $ToolName
+            $installedVer = Get-PowerShellModuleVersion -ModuleName $ModuleName
+            Add-SkippedTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { "Unknown" }) -Reason "Already installed"
             return $true
         }
         else {
             Write-ErrorLog -Message "Failed to install $ToolName" -Exception $_.Exception
-            $script:failedTools += $ToolName
+            Add-FailedTool -Name $ToolName -Reason $_.Exception.Message
             return $false
         }
     }
@@ -429,7 +579,7 @@ function Install-NodeViaNvm {
 
         if ($LASTEXITCODE -ne 0) {
             Write-ErrorLog -Message "Failed to install Node.js $Version via NVM"
-            $script:failedTools += "Node.js $Version"
+            Add-FailedTool -Name "Node.js" -Reason "NVM install failed"
             return $false
         }
 
@@ -447,7 +597,7 @@ function Install-NodeViaNvm {
 
         if ($nodeVersion) {
             Write-SuccessMessage "Node.js installed successfully (version: $nodeVersion)"
-            $script:installedTools += "Node.js $Version"
+            Add-InstalledTool -Name "Node.js" -Version $nodeVersion.TrimStart('v')
             return $true
         }
         else {
@@ -457,7 +607,7 @@ function Install-NodeViaNvm {
     }
     catch {
         Write-ErrorLog -Message "Exception during Node.js installation" -Exception $_.Exception
-        $script:failedTools += "Node.js $Version"
+        Add-FailedTool -Name "Node.js" -Reason $_.Exception.Message
         return $false
     }
 }
@@ -554,7 +704,7 @@ function Install-DevelopmentTools {
         # Determine action needed
         if ($versionCheck.VersionMatch -and -not $versionCheck.NeedsInstall) {
             Write-InfoMessage "$toolName is already at the correct version ($installedVersion)"
-            $script:skippedTools += $toolName
+            Add-SkippedTool -Name $toolName -Version $installedVersion -Reason "Correct version already installed"
             $stepNumber++
             continue
         }
@@ -571,7 +721,7 @@ function Install-DevelopmentTools {
             }
 
             Update-EnvironmentPath
-            $script:updatedTools += "$toolName (upgraded from $installedVersion to $version)"
+            Add-UpdatedTool -Name $toolName -OldVersion $installedVersion -NewVersion $version
         }
 
         # Install based on source
@@ -635,29 +785,56 @@ try {
     # Step 6: Display summary
     Write-StepMessage -StepNumber 6 -TotalSteps 6 -Message "Generating summary report"
 
-    $summaryData = [ordered]@{
-        "Installed Tools"      = if ($script:installedTools.Count -gt 0) { $script:installedTools } else { @("None") }
-        "Updated Tools"        = if ($script:updatedTools.Count -gt 0) { $script:updatedTools } else { @("None") }
-        "Skipped Tools"        = if ($script:skippedTools.Count -gt 0) { $script:skippedTools } else { @("None") }
-        "Failed Tools"         = if ($script:failedTools.Count -gt 0) { $script:failedTools } else { @("None") }
-        "Total Errors"         = (Get-ErrorLog).Count
-        "Total Warnings"       = (Get-WarningLog).Count
-        "Script Duration"      = "{0:N2} minutes" -f ((Get-Date) - $script:ScriptStartTime).TotalMinutes
-        "Completion Time"      = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-HeaderMessage "DEVELOPMENT TOOLS INSTALLATION - SUMMARY"
+
+    # Summary statistics
+    Write-ColorOutput "Overall Statistics:" -Color Cyan
+    Write-ColorOutput "  Total Installed: " -Color White -NoNewline
+    Write-ColorOutput "$($script:installedTools.Count)" -Color Green
+    Write-ColorOutput "  Total Updated: " -Color White -NoNewline
+    Write-ColorOutput "$($script:updatedTools.Count)" -Color Magenta
+    Write-ColorOutput "  Total Skipped: " -Color White -NoNewline
+    Write-ColorOutput "$($script:skippedTools.Count)" -Color Yellow
+    Write-ColorOutput "  Total Failed: " -Color White -NoNewline
+    Write-ColorOutput "$($script:failedTools.Count)" -Color Red
+    Write-ColorOutput "  Total Errors: " -Color White -NoNewline
+    Write-ColorOutput "$($(Get-ErrorLog).Count)" -Color $(if ((Get-ErrorLog).Count -gt 0) { "Red" } else { "Green" })
+    Write-ColorOutput "  Total Warnings: " -Color White -NoNewline
+    Write-ColorOutput "$($(Get-WarningLog).Count)" -Color $(if ((Get-WarningLog).Count -gt 0) { "Yellow" } else { "Green" })
+    Write-ColorOutput "  Duration: " -Color White -NoNewline
+    Write-ColorOutput ("{0:N2} minutes" -f ((Get-Date) - $script:ScriptStartTime).TotalMinutes) -Color Cyan
+    Write-ColorOutput "" -Color White
+
+    # Installed Tools
+    Write-SectionHeader "Installed Tools"
+    Format-ToolTable -Tools $script:installedTools -Type "Installed"
+    Write-ColorOutput "" -Color White
+
+    # Updated Tools
+    if ($script:updatedTools.Count -gt 0) {
+        Write-SectionHeader "Updated Tools"
+        Format-ToolTable -Tools $script:updatedTools -Type "Updated"
+        Write-ColorOutput "" -Color White
     }
 
-    Write-DevSummary -Title "DEVELOPMENT TOOLS INSTALLATION - SUMMARY" -Sections $summaryData
+    # Skipped Tools
+    if ($script:skippedTools.Count -gt 0) {
+        Write-SectionHeader "Skipped Tools"
+        Format-ToolTable -Tools $script:skippedTools -Type "Skipped"
+        Write-ColorOutput "" -Color White
+    }
+
+    # Failed Tools
+    if ($script:failedTools.Count -gt 0) {
+        Write-SectionHeader "Failed Tools"
+        Format-ToolTable -Tools $script:failedTools -Type "Failed"
+        Write-ColorOutput "" -Color White
+    }
 
     # Show detailed error summary if errors occurred
     if ((Get-ErrorLog).Count -gt 0 -or (Get-WarningLog).Count -gt 0) {
         Show-ErrorSummary
     }
-
-    # Prompt user for next steps
-    Write-ColorOutput "`nNext Steps:" -Color Cyan
-    Write-ColorOutput "1. Close and reopen your terminal to refresh environment variables" -Color White
-    Write-ColorOutput "2. Verify installations by running version checks for each tool" -Color White
-    Write-ColorOutput "3. Review any warnings or errors listed above" -Color White
 
     if ($script:failedTools.Count -gt 0) {
         Write-ColorOutput "`nWARNING: Some tools failed to install. Please review the errors above." -Color Yellow
