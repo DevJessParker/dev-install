@@ -1,5 +1,4 @@
 #Requires -Version 5.1
-#Requires -RunAsAdministrator
 
 <#
 .SYNOPSIS
@@ -7,22 +6,23 @@
 .DESCRIPTION
     Coordinates the execution of all setup scripts in the correct order.
     This script manages the complete development environment installation process.
+
+    DEFAULT BEHAVIOR: Runs in CI/CD mode (non-interactive, minimal checks)
+    Use -LocalDeveloper flag for interactive local development installation
 .PARAMETER ConfigPath
     Path to the configuration file (default: .\config\tools-config.json)
-.PARAMETER SkipSystemCheck
-    Skip system requirements validation
-.PARAMETER ToolsOnly
-    Only install development tools (default behavior)
-.PARAMETER NonInteractive
-    Run without prompts for CI/CD environments
+.PARAMETER LocalDeveloper
+    Run in local developer mode with admin checks, system validation, and user prompts
+    Without this flag, runs in CI/CD mode (non-interactive, skips unnecessary checks)
 .EXAMPLE
     .\setup.ps1
+    # Runs in CI/CD mode (default) - no prompts, minimal checks
 .EXAMPLE
-    .\setup.ps1 -SkipSystemCheck
-.EXAMPLE
-    .\setup.ps1 -NonInteractive
+    .\setup.ps1 -LocalDeveloper
+    # Runs in local developer mode - admin checks, system validation, user prompts
 .NOTES
-    This script must be run as Administrator
+    CI/CD Mode (default): Optimized for automated environments
+    Local Developer Mode: Full validation and interactive prompts
 #>
 
 [CmdletBinding()]
@@ -31,13 +31,7 @@ param(
     [string]$ConfigPath = "$PSScriptRoot\config\tools-config.json",
 
     [Parameter(Mandatory = $false)]
-    [switch]$SkipSystemCheck,
-
-    [Parameter(Mandatory = $false)]
-    [switch]$ToolsOnly,
-
-    [Parameter(Mandatory = $false)]
-    [switch]$NonInteractive
+    [switch]$LocalDeveloper
 )
 
 # Script initialization
@@ -97,18 +91,18 @@ function Confirm-Proceed {
     <#
     .SYNOPSIS
         Prompts user to confirm proceeding with installation
-    .PARAMETER NonInteractive
-        Skip prompt and automatically proceed (for CI/CD)
+    .PARAMETER LocalDeveloper
+        Show interactive prompt for local developer mode
     #>
     [CmdletBinding()]
     [OutputType([bool])]
     param(
         [Parameter(Mandatory = $false)]
-        [switch]$NonInteractive
+        [switch]$LocalDeveloper
     )
 
-    if ($NonInteractive) {
-        Write-InfoMessage "Running in non-interactive mode. Proceeding automatically..."
+    if (-not $LocalDeveloper) {
+        Write-InfoMessage "Running in CI/CD mode. Proceeding automatically..."
         return $true
     }
 
@@ -135,16 +129,18 @@ function Invoke-PreFlightChecks {
         [string]$ConfigPath,
 
         [Parameter(Mandatory = $false)]
-        [switch]$SkipSystemCheck
+        [switch]$LocalDeveloper
     )
 
     Write-SectionHeader "Pre-Flight Checks"
 
-    # Check 1: Admin privileges
-    Write-ProgressMessage "Checking administrator privileges..."
-    Assert-IsAdmin -ScriptName "Development Environment Setup"
+    # Check 1: Admin privileges (only in LocalDeveloper mode)
+    if ($LocalDeveloper) {
+        Write-ProgressMessage "Checking administrator privileges..."
+        Assert-IsAdmin -ScriptName "Development Environment Setup"
+    }
 
-    # Check 2: Configuration file
+    # Check 2: Configuration file (always check)
     Write-ProgressMessage "Validating configuration file..."
     if (-not (Test-Path $ConfigPath)) {
         Write-ErrorLog -Message "Configuration file not found: $ConfigPath" -Fatal
@@ -160,17 +156,14 @@ function Invoke-PreFlightChecks {
         return $false
     }
 
-    # Check 3: System requirements
-    if (-not $SkipSystemCheck) {
+    # Check 3: System requirements (only in LocalDeveloper mode)
+    if ($LocalDeveloper) {
         Write-ProgressMessage "Checking system requirements..."
         $systemInfo = Get-SystemInformation
         Show-SystemInformation -SystemInfo $systemInfo
 
         Test-SystemRequirements -ConfigPath $ConfigPath | Out-Null
         Test-InternetConnection | Out-Null
-    }
-    else {
-        Write-WarningMessage "System requirements check skipped (as requested)"
     }
 
     Write-SuccessMessage "All pre-flight checks passed"
@@ -186,10 +179,7 @@ function Invoke-DevelopmentToolsInstallation {
     [OutputType([bool])]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$ConfigPath,
-
-        [Parameter(Mandatory = $false)]
-        [switch]$SkipSystemCheck
+        [string]$ConfigPath
     )
 
     Write-SectionHeader "Installing Development Tools"
@@ -206,15 +196,10 @@ function Invoke-DevelopmentToolsInstallation {
             ConfigPath = $ConfigPath
         }
 
-        if ($SkipSystemCheck) {
-            $params.SkipSystemCheck = $true
-        }
-
         # Execute script and redirect output to console (don't capture in return value)
         & $scriptPath @params | Out-Default
 
         if ($LASTEXITCODE -eq 0) {
-            Write-SuccessMessage "Development tools installation completed"
             return $true
         }
         else {
@@ -280,22 +265,22 @@ try {
     # Initialize
     Initialize-ErrorHandling
 
-    # Show welcome banner (skip in non-interactive mode)
-    if (-not $NonInteractive) {
+    # Show welcome banner (skip in CI/CD mode)
+    if ($LocalDeveloper) {
         Show-WelcomeBanner
     }
     else {
-        Write-InfoMessage "Running in CI/CD non-interactive mode"
+        Write-InfoMessage "Running in CI/CD mode (non-interactive, minimal checks)"
     }
 
-    # Confirm user wants to proceed (auto-proceeds in non-interactive mode)
-    if (-not (Confirm-Proceed -NonInteractive:$NonInteractive)) {
+    # Confirm user wants to proceed (auto-proceeds in CI/CD mode)
+    if (-not (Confirm-Proceed -LocalDeveloper:$LocalDeveloper)) {
         exit 0
     }
 
     # Pre-flight checks
     Write-ColorOutput "`nStarting setup process..." -Color Cyan
-    $preFlightSuccess = Invoke-PreFlightChecks -ConfigPath $ConfigPath -SkipSystemCheck:$SkipSystemCheck
+    $preFlightSuccess = Invoke-PreFlightChecks -ConfigPath $ConfigPath -LocalDeveloper:$LocalDeveloper
 
     if (-not $preFlightSuccess) {
         Write-ErrorLog -Message "Pre-flight checks failed. Setup cannot continue." -Fatal
@@ -304,19 +289,17 @@ try {
     # Execute installation scripts
     $installSuccess = $true
 
-    # Install development tools (always runs as this is the first script)
-    $installSuccess = Invoke-DevelopmentToolsInstallation -ConfigPath $ConfigPath -SkipSystemCheck:$SkipSystemCheck
+    # Install development tools
+    $installSuccess = Invoke-DevelopmentToolsInstallation -ConfigPath $ConfigPath
 
     # Display final summary
     Show-FinalSummary -Success $installSuccess
 
     # Exit with appropriate code
     if ($installSuccess) {
-        Write-SuccessMessage "`nSetup completed successfully!"
         exit 0
     }
     else {
-        Write-ErrorMessage "`nSetup completed with errors. Please review the log above."
         exit 1
     }
 }

@@ -174,20 +174,117 @@ function Get-CommandVersion {
     }
 }
 
+function Test-VersionExpression {
+    <#
+    .SYNOPSIS
+        Tests if an installed version satisfies a version expression
+    .PARAMETER InstalledVersion
+        The installed version string (e.g., "1.2.3")
+    .PARAMETER VersionExpression
+        Version expression supporting:
+        - "latest" - any version
+        - "1.2.3" - exact match
+        - ">=1.2.3" - greater than or equal
+        - ">1.2.3" - greater than
+        - "<=1.2.3" - less than or equal
+        - "<1.2.3" - less than
+        - "^1.2.3" - caret range (>=1.2.3 <2.0.0)
+        - "~1.2.3" - tilde range (>=1.2.3 <1.3.0)
+    .EXAMPLE
+        Test-VersionExpression -InstalledVersion "1.5.0" -VersionExpression ">=1.2.0"
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstalledVersion,
+
+        [Parameter(Mandatory = $true)]
+        [string]$VersionExpression
+    )
+
+    # Handle "latest" - any version is acceptable
+    if ($VersionExpression -eq "latest") {
+        return $true
+    }
+
+    try {
+        $installedVer = [version]$InstalledVersion
+
+        # Handle caret range (^): Compatible with major version
+        # ^1.2.3 means >=1.2.3 <2.0.0
+        if ($VersionExpression -match '^\^(\d+)\.(\d+)\.(\d+)') {
+            $major = [int]$matches[1]
+            $minor = [int]$matches[2]
+            $patch = [int]$matches[3]
+            $minVersion = [version]"$major.$minor.$patch"
+            $maxVersion = [version]"$($major + 1).0.0"
+
+            return ($installedVer -ge $minVersion -and $installedVer -lt $maxVersion)
+        }
+
+        # Handle tilde range (~): Compatible with minor version
+        # ~1.2.3 means >=1.2.3 <1.3.0
+        if ($VersionExpression -match '^\~(\d+)\.(\d+)\.(\d+)') {
+            $major = [int]$matches[1]
+            $minor = [int]$matches[2]
+            $patch = [int]$matches[3]
+            $minVersion = [version]"$major.$minor.$patch"
+            $maxVersion = [version]"$major.$($minor + 1).0"
+
+            return ($installedVer -ge $minVersion -and $installedVer -lt $maxVersion)
+        }
+
+        # Handle >= operator
+        if ($VersionExpression -match '^>=(.+)') {
+            $requiredVer = [version]$matches[1]
+            return ($installedVer -ge $requiredVer)
+        }
+
+        # Handle > operator
+        if ($VersionExpression -match '^>(.+)') {
+            $requiredVer = [version]$matches[1]
+            return ($installedVer -gt $requiredVer)
+        }
+
+        # Handle <= operator
+        if ($VersionExpression -match '^<=(.+)') {
+            $requiredVer = [version]$matches[1]
+            return ($installedVer -le $requiredVer)
+        }
+
+        # Handle < operator
+        if ($VersionExpression -match '^<(.+)') {
+            $requiredVer = [version]$matches[1]
+            return ($installedVer -lt $requiredVer)
+        }
+
+        # Exact version match
+        $requiredVer = [version]$VersionExpression
+        return ($installedVer -eq $requiredVer)
+    }
+    catch {
+        # Fallback to string comparison
+        return ($InstalledVersion -eq $VersionExpression)
+    }
+}
+
 function Test-ToolVersion {
     <#
     .SYNOPSIS
-        Compares installed version with required version
+        Compares installed version with required version expression
     .PARAMETER InstalledVersion
         Currently installed version
     .PARAMETER RequiredVersion
-        Required version
+        Required version expression (supports >=, >, <=, <, ^, ~, exact, latest)
     .PARAMETER ToolName
         Name of the tool for display purposes
     .PARAMETER AllowNewer
-        Whether newer versions are acceptable (default: $true)
+        Whether newer versions are acceptable for exact matches (default: $true)
     .EXAMPLE
-        Test-ToolVersion -InstalledVersion "18.19.1" -RequiredVersion "18.19.1" -ToolName "Node.js"
+        Test-ToolVersion -InstalledVersion "18.19.1" -RequiredVersion ">=18.0.0" -ToolName "Node.js"
+    .EXAMPLE
+        Test-ToolVersion -InstalledVersion "1.5.0" -RequiredVersion "^1.2.0" -ToolName "MyTool"
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -215,63 +312,46 @@ function Test-ToolVersion {
         RequiredVersion  = $RequiredVersion
     }
 
-    # Handle "latest" version requirement
-    if ($RequiredVersion -eq "latest") {
-        if ($InstalledVersion) {
-            $result.IsInstalled = $true
-            $result.VersionMatch = $true
-            $result.NeedsInstall = $false
-            Write-InfoMessage "$ToolName is installed (version: $InstalledVersion). Required: latest"
-        }
-        else {
-            Write-InfoMessage "$ToolName is not installed. Will install latest version."
-        }
-        return $result
-    }
-
     # Check if tool is installed
     if (-not $InstalledVersion) {
-        Write-InfoMessage "$ToolName is not installed. Required version: $RequiredVersion"
+        Write-InfoMessage "$ToolName is not installed. Required: $RequiredVersion"
         return $result
     }
 
     $result.IsInstalled = $true
 
-    # Try to parse as versions for comparison
-    try {
-        $installedVer = [version]$InstalledVersion
-        $requiredVer = [version]$RequiredVersion
+    # Test if installed version satisfies the required version expression
+    $satisfies = Test-VersionExpression -InstalledVersion $InstalledVersion -VersionExpression $RequiredVersion
 
-        if ($installedVer -eq $requiredVer) {
-            $result.VersionMatch = $true
-            $result.NeedsInstall = $false
-            Write-SuccessMessage "$ToolName version matches: $InstalledVersion"
-        }
-        elseif ($installedVer -gt $requiredVer) {
-            if ($AllowNewer) {
-                $result.VersionMatch = $true
-                $result.NeedsInstall = $false
-                Write-InfoMessage "$ToolName has newer version: $InstalledVersion (required: $RequiredVersion)"
+    if ($satisfies) {
+        $result.VersionMatch = $true
+        $result.NeedsInstall = $false
+        Write-SuccessMessage "$ToolName version $InstalledVersion satisfies requirement: $RequiredVersion"
+    }
+    else {
+        # Determine if upgrade or downgrade is needed
+        try {
+            $installedVer = [version]$InstalledVersion
+
+            # Extract base version from expression for comparison
+            $baseVersion = $RequiredVersion
+            if ($RequiredVersion -match '[\^~>=<]+(.+)') {
+                $baseVersion = $matches[1]
+            }
+
+            $requiredVer = [version]$baseVersion
+
+            if ($installedVer -lt $requiredVer) {
+                $result.NeedsUpgrade = $true
+                Write-WarningMessage "$ToolName version $InstalledVersion does not satisfy $RequiredVersion. Upgrade needed."
             }
             else {
                 $result.NeedsDowngrade = $true
-                Write-WarningMessage "$ToolName version $InstalledVersion is newer than required $RequiredVersion and will be replaced"
+                Write-WarningMessage "$ToolName version $InstalledVersion does not satisfy $RequiredVersion. Reinstall needed."
             }
         }
-        else {
-            $result.NeedsUpgrade = $true
-            Write-WarningMessage "$ToolName version $InstalledVersion is older than required $RequiredVersion and will be replaced"
-        }
-    }
-    catch {
-        # String comparison fallback
-        if ($InstalledVersion -eq $RequiredVersion) {
-            $result.VersionMatch = $true
-            $result.NeedsInstall = $false
-            Write-SuccessMessage "$ToolName version matches: $InstalledVersion"
-        }
-        else {
-            Write-WarningMessage "$ToolName version mismatch. Installed: $InstalledVersion, Required: $RequiredVersion"
+        catch {
+            Write-WarningMessage "$ToolName version $InstalledVersion does not satisfy $RequiredVersion"
         }
     }
 
@@ -358,4 +438,5 @@ function Show-ToolVersionStatus {
 # Export module members
 Export-ModuleMember -Function Get-ChocoPackageVersion, Get-PowerShellModuleVersion,
                               Get-NodeVersion, Get-NvmVersion, Get-CommandVersion,
-                              Test-ToolVersion, Get-InstalledToolVersion, Show-ToolVersionStatus
+                              Test-VersionExpression, Test-ToolVersion, Get-InstalledToolVersion,
+                              Show-ToolVersionStatus

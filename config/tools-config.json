@@ -1,4 +1,15 @@
 {
+  "_versionExpressionExamples": {
+    "_comment": "Version expressions support the following formats:",
+    "_example1": "latest - any version is acceptable",
+    "_example2": "1.2.3 - exact version required",
+    "_example3": ">=1.2.3 - version 1.2.3 or higher",
+    "_example4": ">1.2.3 - version higher than 1.2.3",
+    "_example5": "<=1.2.3 - version 1.2.3 or lower",
+    "_example6": "<1.2.3 - version lower than 1.2.3",
+    "_example7": "^1.2.3 - compatible with 1.x.x (>=1.2.3 <2.0.0)",
+    "_example8": "~1.2.3 - compatible with 1.2.x (>=1.2.3 <1.3.0)"
+  },
   "developmentTools": {
     "chocolatey": {
       "version": "latest",
