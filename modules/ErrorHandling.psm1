@@ -7,12 +7,23 @@
     Provides standardized error handling, logging, and recovery mechanisms
 #>
 
-# Import ColorConfig for consistent output
-Import-Module "$PSScriptRoot\ColorConfig.psm1" -Force
-
 # Script-level error log collection
 $Script:ErrorLog = @()
 $Script:WarningLog = @()
+
+# Helper function for colored output (internal to this module)
+function Write-ColorMessage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [Parameter(Mandatory = $false)]
+        [System.ConsoleColor]$Color = [System.ConsoleColor]::White
+    )
+
+    Write-Host $Message -ForegroundColor $Color
+}
 
 function Initialize-ErrorHandling {
     <#
@@ -66,18 +77,18 @@ function Write-ErrorLog {
     $Script:ErrorLog += $errorEntry
 
     # Display error
-    Write-ErrorMessage $Message
+    Write-ColorMessage "ERROR: $Message" -Color Red
 
     if ($Exception) {
-        Write-ColorOutput -Message "Exception Details: $($Exception.Message)" -Color Red
+        Write-ColorMessage "Exception Details: $($Exception.Message)" -Color Red
         if ($Exception.InnerException) {
-            Write-ColorOutput -Message "Inner Exception: $($Exception.InnerException.Message)" -Color Red
+            Write-ColorMessage "Inner Exception: $($Exception.InnerException.Message)" -Color Red
         }
     }
 
     if ($Fatal) {
-        Write-ErrorMessage "Fatal error encountered. Script execution cannot continue."
-        Write-ColorOutput -Message "`nError Log Summary:" -Color Red
+        Write-ColorMessage "ERROR: Fatal error encountered. Script execution cannot continue." -Color Red
+        Write-ColorMessage "`nError Log Summary:" -Color Red
         Show-ErrorSummary
         exit 1
     }
@@ -104,7 +115,7 @@ function Write-WarningLog {
     }
 
     $Script:WarningLog += $warningEntry
-    Write-WarningMessage $Message
+    Write-ColorMessage "WARNING: $Message" -Color Yellow
 }
 
 function Invoke-WithRetry {
@@ -145,17 +156,17 @@ function Invoke-WithRetry {
         $attempt++
 
         try {
-            Write-ProgressMessage "$OperationName (Attempt $attempt of $MaxRetries)"
+            Write-ColorMessage "[PROGRESS] $OperationName (Attempt $attempt of $MaxRetries)" -Color Magenta
             & $ScriptBlock
             $success = $true
-            Write-SuccessMessage "$OperationName completed successfully"
+            Write-ColorMessage "SUCCESS: $OperationName completed successfully" -Color Green
         }
         catch {
             $lastError = $_
-            Write-WarningMessage "$OperationName failed on attempt $attempt : $($_.Exception.Message)"
+            Write-ColorMessage "WARNING: $OperationName failed on attempt $attempt : $($_.Exception.Message)" -Color Yellow
 
             if ($attempt -lt $MaxRetries) {
-                Write-InfoMessage "Retrying in $RetryDelaySeconds seconds..."
+                Write-ColorMessage "INFO: Retrying in $RetryDelaySeconds seconds..." -Color Cyan
                 Start-Sleep -Seconds $RetryDelaySeconds
             }
         }
@@ -205,24 +216,24 @@ function Show-ErrorSummary {
     param()
 
     if ($Script:ErrorLog.Count -gt 0) {
-        Write-ColorOutput -Message "`nErrors Encountered:" -Color Red
+        Write-ColorMessage "`nErrors Encountered:" -Color Red
         foreach ($error in $Script:ErrorLog) {
-            Write-ColorOutput -Message "  [$($error.Timestamp)] $($error.Message)" -Color Red
+            Write-ColorMessage "  [$($error.Timestamp)] $($error.Message)" -Color Red
             if ($error.Exception) {
-                Write-ColorOutput -Message "    Exception: $($error.Exception)" -Color DarkRed
+                Write-ColorMessage "    Exception: $($error.Exception)" -Color DarkRed
             }
         }
     }
 
     if ($Script:WarningLog.Count -gt 0) {
-        Write-ColorOutput -Message "`nWarnings:" -Color Yellow
+        Write-ColorMessage "`nWarnings:" -Color Yellow
         foreach ($warning in $Script:WarningLog) {
-            Write-ColorOutput -Message "  [$($warning.Timestamp)] $($warning.Message)" -Color Yellow
+            Write-ColorMessage "  [$($warning.Timestamp)] $($warning.Message)" -Color Yellow
         }
     }
 
     if ($Script:ErrorLog.Count -eq 0 -and $Script:WarningLog.Count -eq 0) {
-        Write-SuccessMessage "No errors or warnings encountered"
+        Write-ColorMessage "SUCCESS: No errors or warnings encountered" -Color Green
     }
 }
 
@@ -294,7 +305,7 @@ function Invoke-SafeCommand {
     )
 
     try {
-        Write-ProgressMessage "Executing: $Command $($Arguments -join ' ')"
+        Write-ColorMessage "[PROGRESS] Executing: $Command $($Arguments -join ' ')" -Color Magenta
 
         if ($PSVersionTable.PSVersion.Major -ge 6) {
             # PowerShell Core 6+ syntax

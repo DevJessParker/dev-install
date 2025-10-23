@@ -5,11 +5,10 @@
     System requirements checking module for installation scripts
 .DESCRIPTION
     Provides functions to check OS version, hardware specifications, and system requirements
+.NOTES
+    This module requires ColorConfig and ErrorHandling modules to be imported
+    before using its functions in your scripts.
 #>
-
-# Import required modules
-Import-Module "$PSScriptRoot\ColorConfig.psm1" -Force
-Import-Module "$PSScriptRoot\ErrorHandling.psm1" -Force
 
 function Get-SystemInformation {
     <#

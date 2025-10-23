@@ -6,11 +6,10 @@
 .DESCRIPTION
     Provides functions to check installed versions, compare with required versions,
     and manage version-specific installations
+.NOTES
+    This module requires ColorConfig and ErrorHandling modules to be imported
+    before using its functions in your scripts.
 #>
-
-# Import required modules
-Import-Module "$PSScriptRoot\ColorConfig.psm1" -Force
-Import-Module "$PSScriptRoot\ErrorHandling.psm1" -Force
 
 function Get-ChocoPackageVersion {
     <#
