@@ -29,6 +29,7 @@ param(
 # Script initialization
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$script:ScriptStartTime = Get-Date
 
 # Import required modules
 $modulePath = "$PSScriptRoot\..\modules"
@@ -437,7 +438,7 @@ try {
         "Failed Tools"         = if ($script:failedTools.Count -gt 0) { $script:failedTools } else { @("None") }
         "Total Errors"         = (Get-ErrorLog).Count
         "Total Warnings"       = (Get-WarningLog).Count
-        "Script Duration"      = "{0:N2} minutes" -f ((Get-Date) - $PSCommandPath.StartTime).TotalMinutes
+        "Script Duration"      = "{0:N2} minutes" -f ((Get-Date) - $script:ScriptStartTime).TotalMinutes
         "Completion Time"      = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     }
 

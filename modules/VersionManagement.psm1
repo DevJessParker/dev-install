@@ -347,8 +347,11 @@ function Show-ToolVersionStatus {
         $statusSymbol = if ($status.VersionMatch) { "[OK]" } elseif ($status.IsInstalled) { "[UPDATE]" } else { "[INSTALL]" }
         $statusColor = if ($status.VersionMatch) { $Script:ColorScheme.Success } elseif ($status.IsInstalled) { $Script:ColorScheme.Warning } else { $Script:ColorScheme.Info }
 
+        # PowerShell 5.1 compatible null check
+        $installedVersionDisplay = if ($status.InstalledVersion) { $status.InstalledVersion } else { 'Not installed' }
+
         Write-ColorOutput "$statusSymbol $($status.ToolName)" -Color $statusColor -NoNewline
-        Write-ColorOutput " - Installed: $($status.InstalledVersion ?? 'Not installed'), Required: $($status.RequiredVersion)" -Color White
+        Write-ColorOutput " - Installed: $installedVersionDisplay, Required: $($status.RequiredVersion)" -Color White
     }
 }
 
