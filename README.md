@@ -25,12 +25,13 @@ This repository contains modular PowerShell scripts designed to automate the set
 
 - **Configuration-Driven**: All tool versions are managed through a single JSON configuration file
 - **Robust Error Handling**: Comprehensive error handling with informative messages and retry logic
-- **Version Management**: Automatically checks installed versions and upgrades/downgrades to match exact requirements
+- **Version Management**: Automatically checks installed versions and upgrades/dowgrades to match exact requirements
 - **Progress Feedback**: Step-by-step progress reporting throughout the installation process
 - **Admin Privilege Checking**: Fails fast if not running with administrator privileges
 - **System Requirements Validation**: Checks OS version, RAM, disk space, and other system specs
 - **Modular Architecture**: Reusable modules for common functionality
 - **PowerShell 5.1+ Compatible**: Works with both Windows PowerShell 5.1 and PowerShell 7+
+- **CI/CD Ready**: Non-interactive mode for automated pipelines (GitHub Actions, Azure DevOps, Jenkins)
 - **Dev Summary Reports**: Detailed summary at the end of each script execution
 - **Colored Terminal Output**: Easy-to-read color-coded console messages
 
@@ -213,6 +214,49 @@ Run the complete setup process:
 
 # Combine options
 .\setup.ps1 -SkipSystemCheck -ConfigPath ".\custom-config.json"
+
+# Run in CI/CD mode (no prompts, automatic proceed)
+.\setup.ps1 -NonInteractive
+
+# Full CI/CD example (recommended for automated environments)
+.\setup.ps1 -NonInteractive -SkipSystemCheck
+```
+
+### CI/CD Usage
+
+For automated CI/CD pipelines (GitHub Actions, Azure DevOps, Jenkins, etc.), use the `-NonInteractive` flag to run without any prompts:
+
+```powershell
+# Minimal CI/CD command
+.\setup.ps1 -NonInteractive
+
+# Recommended CI/CD command with system check skip
+.\setup.ps1 -NonInteractive -SkipSystemCheck
+```
+
+**CI/CD Notes:**
+- `-NonInteractive` skips all user prompts and automatically proceeds with installation
+- Recommended to combine with `-SkipSystemCheck` in containers or VMs with known specs
+- All installations run silently with automatic confirmations
+- Script will exit with code 0 on success, 1 on failure
+- Output is logged to console for CI/CD tools to capture
+
+**Example GitHub Actions Workflow:**
+```yaml
+- name: Install Development Tools
+  shell: pwsh
+  run: |
+    .\setup.ps1 -NonInteractive -SkipSystemCheck
+```
+
+**Example Azure DevOps Pipeline:**
+```yaml
+- task: PowerShell@2
+  displayName: 'Install Development Environment'
+  inputs:
+    targetType: 'filePath'
+    filePath: '.\setup.ps1'
+    arguments: '-NonInteractive -SkipSystemCheck'
 ```
 
 ### Individual Scripts

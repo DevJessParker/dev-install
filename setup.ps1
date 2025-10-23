@@ -13,10 +13,14 @@
     Skip system requirements validation
 .PARAMETER ToolsOnly
     Only install development tools (default behavior)
+.PARAMETER NonInteractive
+    Run without prompts for CI/CD environments
 .EXAMPLE
     .\setup.ps1
 .EXAMPLE
     .\setup.ps1 -SkipSystemCheck
+.EXAMPLE
+    .\setup.ps1 -NonInteractive
 .NOTES
     This script must be run as Administrator
 #>
@@ -30,7 +34,10 @@ param(
     [switch]$SkipSystemCheck,
 
     [Parameter(Mandatory = $false)]
-    [switch]$ToolsOnly
+    [switch]$ToolsOnly,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NonInteractive
 )
 
 # Script initialization
@@ -90,10 +97,20 @@ function Confirm-Proceed {
     <#
     .SYNOPSIS
         Prompts user to confirm proceeding with installation
+    .PARAMETER NonInteractive
+        Skip prompt and automatically proceed (for CI/CD)
     #>
     [CmdletBinding()]
     [OutputType([bool])]
-    param()
+    param(
+        [Parameter(Mandatory = $false)]
+        [switch]$NonInteractive
+    )
+
+    if ($NonInteractive) {
+        Write-InfoMessage "Running in non-interactive mode. Proceeding automatically..."
+        return $true
+    }
 
     Write-ColorOutput "`nDo you want to proceed with the installation? (Y/N): " -Color Yellow -NoNewline
     $response = Read-Host
@@ -275,11 +292,16 @@ try {
     # Initialize
     Initialize-ErrorHandling
 
-    # Show welcome banner
-    Show-WelcomeBanner
+    # Show welcome banner (skip in non-interactive mode)
+    if (-not $NonInteractive) {
+        Show-WelcomeBanner
+    }
+    else {
+        Write-InfoMessage "Running in CI/CD non-interactive mode"
+    }
 
-    # Confirm user wants to proceed
-    if (-not (Confirm-Proceed)) {
+    # Confirm user wants to proceed (auto-proceeds in non-interactive mode)
+    if (-not (Confirm-Proceed -NonInteractive:$NonInteractive)) {
         exit 0
     }
 
