@@ -49,8 +49,8 @@
       "description": "File archiver with high compression ratio"
     },
     "netfx-devpack": {
-      "version": "4.7.2",
-      "packageName": "netfx-4.7.2-devpack",
+      "version": "4.8.0.20190930",
+      "packageName": "netfx-4.8-devpack",
       "source": "chocolatey",
       "description": ".NET Framework Developer Pack"
     },

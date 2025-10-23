@@ -210,7 +210,8 @@ function Invoke-DevelopmentToolsInstallation {
             $params.SkipSystemCheck = $true
         }
 
-        & $scriptPath @params
+        # Execute script and redirect output to console (don't capture in return value)
+        & $scriptPath @params | Out-Default
 
         if ($LASTEXITCODE -eq 0) {
             Write-SuccessMessage "Development tools installation completed"
