@@ -28,13 +28,34 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $script:ScriptStartTime = Get-Date
 
-# Import required modules
-$modulePath = "$PSScriptRoot\..\modules"
-Import-Module "$modulePath\AdminCheck.psm1" -Force
-Import-Module "$modulePath\ColorConfig.psm1" -Force
-Import-Module "$modulePath\ErrorHandling.psm1" -Force
-Import-Module "$modulePath\SystemCheck.psm1" -Force
-Import-Module "$modulePath\VersionManagement.psm1" -Force
+# OS Detection
+$script:IsWindows = ($PSVersionTable.PSVersion.Major -le 5) -or $IsWindows
+$script:IsLinux = (Get-Variable -Name "IsLinux" -ErrorAction SilentlyContinue) -and $IsLinux
+$script:IsMacOS = (Get-Variable -Name "IsMacOS" -ErrorAction SilentlyContinue) -and $IsMacOS
+
+# Early exit for non-Windows platforms
+if (-not $script:IsWindows) {
+    Write-Host "================================================================" -ForegroundColor Yellow
+    Write-Host "     PLATFORM NOT SUPPORTED" -ForegroundColor Yellow
+    Write-Host "================================================================" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "This installation script is designed for Windows environments." -ForegroundColor White
+    Write-Host "Detected OS: $($PSVersionTable.OS)" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "For Linux/macOS installations, please use platform-specific" -ForegroundColor White
+    Write-Host "package managers (apt, yum, brew, etc.)." -ForegroundColor White
+    Write-Host ""
+    Write-Host "Exiting gracefully..." -ForegroundColor Gray
+    exit 0
+}
+
+# Import required modules (using Join-Path for cross-platform compatibility)
+$modulePath = Join-Path -Path $PSScriptRoot -ChildPath ".." | Join-Path -ChildPath "modules"
+Import-Module (Join-Path -Path $modulePath -ChildPath "AdminCheck.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "ColorConfig.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "ErrorHandling.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "SystemCheck.psm1") -Force
+Import-Module (Join-Path -Path $modulePath -ChildPath "VersionManagement.psm1") -Force
 
 # Script-level variables (tracking tool installation with versions)
 $script:installedTools = @()
@@ -303,56 +324,182 @@ function Install-PowerShellGet {
     }
 }
 
-function Install-Chocolatey {
+function Import-ChocolateyProfile {
     <#
     .SYNOPSIS
-        Installs Chocolatey package manager if not already installed
+        Imports the Chocolatey profile module for Update-SessionEnvironment
     #>
     [CmdletBinding()]
     param()
 
-    Write-ProgressMessage "Checking Chocolatey installation..."
-
     try {
-        $chocoCmd = Get-Command choco -ErrorAction SilentlyContinue
+        $chocoProfilePath = Join-Path -Path $env:ChocolateyInstall -ChildPath "helpers\chocolateyProfile.psm1"
 
-        if ($chocoCmd) {
-            $chocoVersion = choco --version 2>$null
-            Write-SuccessMessage "Chocolatey is already installed (version: $chocoVersion)"
-            return
-        }
-
-        Write-InfoMessage "Chocolatey not found. Installing Chocolatey..."
-
-        # Set execution policy for this process
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-
-        # Download and install Chocolatey
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-
-        $installScript = Invoke-WebRequest -Uri 'https://community.chocolatey.org/install.ps1' -UseBasicParsing
-
-        Invoke-Expression $installScript.Content
-
-        # Refresh environment variables
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-
-        # Verify installation
-        $chocoCmd = Get-Command choco -ErrorAction SilentlyContinue
-        if ($chocoCmd) {
-            $chocoVersion = choco --version 2>$null
-            Write-SuccessMessage "Chocolatey installed successfully (version: $chocoVersion)"
-
-            # Configure Chocolatey
-            choco feature enable -n allowGlobalConfirmation 2>&1 | Out-Null
-            Write-InfoMessage "Chocolatey global confirmation enabled"
+        if (Test-Path $chocoProfilePath) {
+            Import-Module $chocoProfilePath -Force -ErrorAction SilentlyContinue
+            Write-InfoMessage "Chocolatey profile imported (Update-SessionEnvironment available)"
+            return $true
         }
         else {
-            Write-ErrorLog -Message "Chocolatey installation verification failed" -Fatal
+            Write-WarningLog "Chocolatey profile not found at: $chocoProfilePath"
+            return $false
         }
     }
     catch {
-        Write-ErrorLog -Message "Failed to install Chocolatey" -Exception $_.Exception -Fatal
+        Write-WarningLog "Failed to import Chocolatey profile: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Update-SessionEnvironment {
+    <#
+    .SYNOPSIS
+        Refreshes environment variables in the current session
+    .DESCRIPTION
+        Uses Chocolatey's Update-SessionEnvironment if available,
+        otherwise falls back to manual refresh
+    #>
+    [CmdletBinding()]
+    param()
+
+    try {
+        # Try Chocolatey's Update-SessionEnvironment first
+        if (Get-Command Update-SessionEnvironment -ErrorAction SilentlyContinue) {
+            Update-SessionEnvironment
+            Write-InfoMessage "Environment variables refreshed via Update-SessionEnvironment"
+        }
+        else {
+            # Fallback: Manual environment variable refresh
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            Write-InfoMessage "Environment PATH refreshed (manual method)"
+        }
+    }
+    catch {
+        Write-WarningLog "Failed to refresh environment: $($_.Exception.Message)"
+    }
+}
+
+function Install-Chocolatey {
+    <#
+    .SYNOPSIS
+        Installs or upgrades Chocolatey package manager
+    .DESCRIPTION
+        Installs Chocolatey if not present, or upgrades to latest if outdated.
+        Configures enhanced exit codes, proxy support, and retry logic.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Config
+    )
+
+    Write-ProgressMessage "Checking Chocolatey installation..."
+
+    try {
+        # Check if Chocolatey is installed
+        $chocoCmd = Get-Command choco -ErrorAction SilentlyContinue
+        $currentVersion = if ($chocoCmd) { (choco --version 2>$null) } else { $null }
+
+        if ($chocoCmd -and $currentVersion) {
+            Write-InfoMessage "Chocolatey is installed (version: $currentVersion)"
+
+            # Check if upgrade is needed
+            if ($Config -and $Config.upgradeIfOutdated) {
+                Write-ProgressMessage "Checking for Chocolatey updates..."
+                $upgradeOutput = choco upgrade chocolatey -y --limit-output 2>&1
+
+                if ($LASTEXITCODE -eq 0) {
+                    $newVersion = choco --version 2>$null
+                    if ($newVersion -ne $currentVersion) {
+                        Write-SuccessMessage "Chocolatey upgraded: $currentVersion → $newVersion"
+                        Update-SessionEnvironment
+                    }
+                    else {
+                        Write-InfoMessage "Chocolatey is already at the latest version"
+                    }
+                }
+            }
+        }
+        else {
+            Write-InfoMessage "Chocolatey not found. Installing Chocolatey..."
+
+            # Set execution policy for this process
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+
+            # Configure TLS 1.2
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+
+            # Set proxy if configured
+            if ($env:HTTP_PROXY -or $env:HTTPS_PROXY) {
+                Write-InfoMessage "HTTP/HTTPS proxy detected, using system proxy settings"
+                [System.Net.WebRequest]::DefaultWebProxy.Credentials = [System.Net.CredentialCache]::DefaultNetworkCredentials
+            }
+
+            # Download and install Chocolatey with retry logic
+            $maxRetries = if ($Config -and $Config.retryCount) { $Config.retryCount } else { 3 }
+            $retryDelay = if ($Config -and $Config.retryDelaySeconds) { $Config.retryDelaySeconds } else { 5 }
+            $installed = $false
+            $retryCount = 0
+
+            while (-not $installed -and $retryCount -lt $maxRetries) {
+                try {
+                    Write-InfoMessage "Downloading Chocolatey installer (attempt $($retryCount + 1)/$maxRetries)..."
+                    $installScript = Invoke-WebRequest -Uri 'https://community.chocolatey.org/install.ps1' -UseBasicParsing -TimeoutSec 30
+
+                    Write-InfoMessage "Running Chocolatey installer..."
+                    Invoke-Expression $installScript.Content
+
+                    $installed = $true
+                }
+                catch {
+                    $retryCount++
+                    if ($retryCount -lt $maxRetries) {
+                        Write-WarningLog "Download failed (attempt $retryCount/$maxRetries). Retrying in $retryDelay seconds..."
+                        Start-Sleep -Seconds $retryDelay
+                    }
+                    else {
+                        throw "Failed to download Chocolatey after $maxRetries attempts: $($_.Exception.Message)"
+                    }
+                }
+            }
+
+            # Refresh environment
+            Update-SessionEnvironment
+
+            # Verify installation
+            $chocoCmd = Get-Command choco -ErrorAction SilentlyContinue
+            if ($chocoCmd) {
+                $chocoVersion = choco --version 2>$null
+                Write-SuccessMessage "Chocolatey installed successfully (version: $chocoVersion)"
+            }
+            else {
+                Write-ErrorLog -Message "Chocolatey installation verification failed" -Fatal
+                return
+            }
+        }
+
+        # Configure Chocolatey features
+        Write-InfoMessage "Configuring Chocolatey features..."
+
+        # Enable enhanced exit codes (0=success, non-zero with specific meanings)
+        if ($Config -and $Config.useEnhancedExitCodes) {
+            choco feature enable -n useEnhancedExitCodes 2>&1 | Out-Null
+            Write-InfoMessage "Enhanced exit codes enabled"
+        }
+
+        # Note: NOT enabling allowGlobalConfirmation (use -y flag instead)
+        Write-InfoMessage "Using -y flag for confirmations (not allowGlobalConfirmation)"
+
+        # Import Chocolatey profile for Update-SessionEnvironment
+        Import-ChocolateyProfile | Out-Null
+
+        # Add Chocolatey to installed tools tracking
+        $finalVersion = choco --version 2>$null
+        Add-InstalledTool -Name "Chocolatey" -Version $finalVersion
+
+    }
+    catch {
+        Write-ErrorLog -Message "Failed to install/configure Chocolatey" -Exception $_.Exception -Fatal
     }
 }
 
@@ -708,23 +855,6 @@ function Install-NodeViaNvm {
     }
 }
 
-function Update-EnvironmentPath {
-    <#
-    .SYNOPSIS
-        Refreshes the PATH environment variable
-    #>
-    [CmdletBinding()]
-    param()
-
-    try {
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-        Write-InfoMessage "Environment PATH refreshed"
-    }
-    catch {
-        Write-WarningLog "Failed to refresh environment PATH: $($_.Exception.Message)"
-    }
-}
-
 function Install-DevelopmentTools {
     <#
     .SYNOPSIS
@@ -781,7 +911,7 @@ function Install-DevelopmentTools {
 
         # Special handling for Chocolatey
         if ($toolKey -eq "chocolatey") {
-            Install-Chocolatey | Out-Null
+            Install-Chocolatey -Config $tool | Out-Null
             $stepNumber++
             continue
         }
@@ -816,7 +946,7 @@ function Install-DevelopmentTools {
                 Uninstall-Module -Name $packageName -AllVersions -Force -ErrorAction SilentlyContinue
             }
 
-            Update-EnvironmentPath
+            Update-SessionEnvironment
             Add-UpdatedTool -Name $toolName -OldVersion $installedVersion -NewVersion $version
         }
 
@@ -838,7 +968,7 @@ function Install-DevelopmentTools {
         }
 
         # Refresh environment after installation
-        Update-EnvironmentPath
+        Update-SessionEnvironment
 
         $stepNumber++
     }

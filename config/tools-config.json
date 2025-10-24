@@ -13,9 +13,13 @@
   "developmentTools": {
     "chocolatey": {
       "version": "latest",
-      "allowGlobalConfiguration": true,
+      "allowGlobalConfiguration": false,
       "source": "script",
-      "description": "Package manager for Windows"
+      "description": "Package manager for Windows",
+      "upgradeIfOutdated": true,
+      "useEnhancedExitCodes": true,
+      "retryCount": 3,
+      "retryDelaySeconds": 5
     },
     "powershellget": {
       "version": "latest",
