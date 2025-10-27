@@ -27,6 +27,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $script:ScriptStartTime = Get-Date
+$script:CancellationRequested = $false
+
+# CTRL+C handler for graceful exit
+trap {
+    $script:CancellationRequested = $true
+    Write-Host "`n`nCTRL+C detected. Cleaning up and exiting..." -ForegroundColor Yellow
+
+    # Clean up any running background jobs
+    $runningJobs = Get-Job | Where-Object { $_.State -eq 'Running' }
+    if ($runningJobs) {
+        Write-Host "Stopping $($runningJobs.Count) background job(s)..." -ForegroundColor Yellow
+        $runningJobs | Stop-Job
+        $runningJobs | Remove-Job -Force
+    }
+
+    Write-Host "Cleanup complete. Exiting..." -ForegroundColor Gray
+    exit 130  # Standard exit code for CTRL+C
+}
 
 # OS Detection
 $script:IsWindows = ($PSVersionTable.PSVersion.Major -le 5) -or $IsWindows
@@ -1036,7 +1054,7 @@ function Install-ToolsInParallel {
     $completed = 0
     $total = $jobs.Count
 
-    while ($completed -lt $total) {
+    while ($completed -lt $total -and -not $script:CancellationRequested) {
         Start-Sleep -Milliseconds 500
 
         foreach ($jobInfo in $jobs) {
@@ -1090,6 +1108,19 @@ function Install-ToolsInParallel {
 
                 Write-ErrorMessage "[$completed/$total] $($jobInfo.ToolKey) - Job Failed"
                 Remove-Job -Job $jobInfo.Job -Force
+            }
+        }
+    }
+
+    # If cancelled, clean up remaining jobs
+    if ($script:CancellationRequested) {
+        Write-WarningMessage "Installation cancelled by user. Cleaning up remaining jobs..."
+        foreach ($jobInfo in $jobs) {
+            if (-not $jobInfo.Processed -and $jobInfo.Job) {
+                if ($jobInfo.Job.State -eq 'Running') {
+                    Stop-Job -Job $jobInfo.Job
+                }
+                Remove-Job -Job $jobInfo.Job -Force -ErrorAction SilentlyContinue
             }
         }
     }
@@ -1257,6 +1288,12 @@ function Install-DevelopmentTools {
 
     # Process each wave
     for ($waveIndex = 0; $waveIndex -lt $waves.Count; $waveIndex++) {
+        # Check for cancellation
+        if ($script:CancellationRequested) {
+            Write-WarningMessage "Installation cancelled by user"
+            break
+        }
+
         $currentWave = $waves[$waveIndex]
         $waveNumber = $waveIndex + 1
 
@@ -1267,6 +1304,12 @@ function Install-DevelopmentTools {
             Write-InfoMessage "Installing bootstrap tools sequentially..."
 
             foreach ($toolKey in $currentWave) {
+                # Check for cancellation
+                if ($script:CancellationRequested) {
+                    Write-WarningMessage "Installation cancelled by user"
+                    break
+                }
+
                 $totalToolsProcessed++
                 Write-StepMessage -StepNumber $totalToolsProcessed -TotalSteps $totalSteps -Message "Processing: $toolKey"
 
