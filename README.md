@@ -515,9 +515,26 @@ Contributions are welcome! To add new tools or improve existing scripts:
 2. Create a feature branch
 3. Add your tool configuration to `config/tools-config.json`
 4. Update installation logic in `scripts/Install-DevelopmentTools.ps1` if needed
-5. Test thoroughly on a clean Windows installation
-6. Update this README with new tool information
-7. Submit a pull request
+5. **Validate your code** - Run the syntax validation script:
+   ```powershell
+   .\scripts\Validate-PowerShellSyntax.ps1
+   # Or with auto-fix:
+   .\scripts\Validate-PowerShellSyntax.ps1 -Fix
+   ```
+6. **Follow PowerShell best practices** - See [docs/POWERSHELL_BEST_PRACTICES.md](docs/POWERSHELL_BEST_PRACTICES.md)
+7. Test thoroughly on a clean Windows installation
+8. Update this README with new tool information
+9. Submit a pull request
+
+### Code Quality Guidelines
+
+- **PowerShell 5.1+ Compatibility**: All code must work on PowerShell 5.1
+- **String Interpolation**: Use `${variable}:` when variable is followed by a colon
+- **Error Handling**: Always check `$LASTEXITCODE` after external commands
+- **Documentation**: Add comment-based help to all functions
+- **Validation**: Run `Validate-PowerShellSyntax.ps1` before committing
+
+See [PowerShell Best Practices](docs/POWERSHELL_BEST_PRACTICES.md) for detailed guidelines.
 
 ## License
 
