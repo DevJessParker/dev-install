@@ -363,10 +363,14 @@ function Update-SessionEnvironment {
     param()
 
     try {
-        # Try Chocolatey's Update-SessionEnvironment first
-        if (Get-Command Update-SessionEnvironment -ErrorAction SilentlyContinue) {
-            Update-SessionEnvironment
-            Write-InfoMessage "Environment variables refreshed via Update-SessionEnvironment"
+        # Check if Chocolatey's Update-SessionEnvironment is available (not our own function)
+        $chocoCommand = Get-Command Update-SessionEnvironment -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source -like '*chocolatey*' -or $_.ModuleName -like '*chocolatey*' }
+
+        if ($chocoCommand) {
+            # Call Chocolatey's Update-SessionEnvironment using the full command object
+            & $chocoCommand
+            Write-InfoMessage "Environment variables refreshed via Chocolatey's Update-SessionEnvironment"
         }
         else {
             # Fallback: Manual environment variable refresh
@@ -988,8 +992,6 @@ function Install-ToolsInParallel {
     }
 
     # Parallel installation using jobs
-    Write-InfoMessage "Installing $($ToolKeys.Count) tools in parallel..."
-
     $jobs = @()
     $scriptPath = $PSScriptRoot
 
