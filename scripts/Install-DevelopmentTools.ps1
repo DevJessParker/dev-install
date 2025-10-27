@@ -390,7 +390,7 @@ function Install-Chocolatey {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [hashtable]$Config
+        $Config
     )
 
     Write-ProgressMessage "Checking Chocolatey installation..."
