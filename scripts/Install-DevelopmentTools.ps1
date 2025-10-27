@@ -1319,10 +1319,21 @@ function Install-DevelopmentTools {
         # Refresh environment after each wave
         Update-SessionEnvironment
 
+        # Close wave block (TeamCity collapsible section)
+        if (Test-TeamCityEnvironment) {
+            Close-TeamCityBlock -Name "Wave $waveNumber/$($waves.Count): $($currentWave.Count) tool(s)"
+        }
+
         Write-ColorOutput "" -Color White
     }
 
     Write-SuccessMessage "Tool installation process completed ($totalToolsProcessed tools processed)"
+
+    # Close main function block
+    if (Test-TeamCityEnvironment) {
+        Close-TeamCityBlock -Name "Development Tools Installation"
+    }
+
     return $true
 }
 
@@ -1366,11 +1377,17 @@ try {
         Write-SectionHeader "Installed Tools"
         Format-ToolTable -Tools $script:installedTools -Type "Installed"
         Write-ColorOutput "" -Color White
+        if (Test-TeamCityEnvironment) {
+            Close-TeamCityBlock -Name "Installed Tools"
+        }
     }
     else {
         Write-SectionHeader "Installed Tools"
         Write-ColorOutput "  None" -Color DarkGray
         Write-ColorOutput "" -Color White
+        if (Test-TeamCityEnvironment) {
+            Close-TeamCityBlock -Name "Installed Tools"
+        }
     }
 
     # Updated Tools
@@ -1378,6 +1395,9 @@ try {
         Write-SectionHeader "Updated Tools"
         Format-ToolTable -Tools $script:updatedTools -Type "Updated"
         Write-ColorOutput "" -Color White
+        if (Test-TeamCityEnvironment) {
+            Close-TeamCityBlock -Name "Updated Tools"
+        }
     }
 
     # Skipped Tools
@@ -1385,6 +1405,9 @@ try {
         Write-SectionHeader "Skipped Tools"
         Format-ToolTable -Tools $script:skippedTools -Type "Skipped"
         Write-ColorOutput "" -Color White
+        if (Test-TeamCityEnvironment) {
+            Close-TeamCityBlock -Name "Skipped Tools"
+        }
     }
 
     # Failed Tools
@@ -1392,11 +1415,19 @@ try {
         Write-SectionHeader "Failed Tools"
         Format-ToolTable -Tools $script:failedTools -Type "Failed"
         Write-ColorOutput "" -Color White
+        if (Test-TeamCityEnvironment) {
+            Close-TeamCityBlock -Name "Failed Tools"
+        }
     }
 
     # Show detailed error summary if errors occurred
     if ((Get-ErrorLog).Count -gt 0 -or (Get-WarningLog).Count -gt 0) {
         Show-ErrorSummary
+    }
+
+    # Close main TeamCity block
+    if (Test-TeamCityEnvironment) {
+        Close-TeamCityBlock -Name "Development Environment Setup - Tool Installation"
     }
 
     if ($script:failedTools.Count -gt 0) {
@@ -1408,5 +1439,11 @@ try {
 }
 catch {
     Write-ErrorLog -Message "Unhandled exception in installation script" -Exception $_.Exception -Fatal
+
+    # Close main TeamCity block on error
+    if (Test-TeamCityEnvironment) {
+        Close-TeamCityBlock -Name "Development Environment Setup - Tool Installation"
+    }
+
     exit 1
 }
