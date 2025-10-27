@@ -27,11 +27,17 @@ This repository contains modular PowerShell scripts designed to automate the set
 - **Robust Error Handling**: Comprehensive error handling with informative messages and retry logic
 - **Version Management**: Automatically checks installed versions and upgrades/dowgrades to match exact requirements
 - **Progress Feedback**: Step-by-step progress reporting throughout the installation process
-- **Admin Privilege Checking**: Fails fast if not running with administrator privileges
-- **System Requirements Validation**: Checks OS version, RAM, disk space, and other system specs
+- **Dual-Mode Operation**: Intelligent detection of CI/CD vs Local Developer environments
+  - **LocalDeveloper Mode**: Admin checks, system validation, user prompts
+  - **CI/CD Mode**: Non-interactive, optimized for automated pipelines
+- **Fail-Fast Protection**: Warns if running without `-LocalDeveloper` flag on non-CI/CD machines
+- **Admin Privilege Checking**: Fails fast if not running with administrator privileges (LocalDeveloper mode)
+- **System Requirements Validation**: Checks OS version, RAM, disk space, and other system specs (LocalDeveloper mode)
 - **Modular Architecture**: Reusable modules for common functionality
 - **PowerShell 5.1+ Compatible**: Works with both Windows PowerShell 5.1 and PowerShell 7+
-- **CI/CD Ready**: Non-interactive mode for automated pipelines (GitHub Actions, Azure DevOps, Jenkins)
+- **CI/CD Ready**: Detects TeamCity, GitHub Actions, Jenkins, and other CI/CD environments
+- **Parallel Installation**: Tools install in parallel waves for 73% faster execution
+- **TeamCity Integration**: Automatic service messages and collapsible log blocks
 - **Dev Summary Reports**: Detailed summary at the end of each script execution
 - **Colored Terminal Output**: Easy-to-read color-coded console messages
 
@@ -81,16 +87,25 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ### Step 4: Run Setup Script
 
+**For Local Developers (Recommended):**
+```powershell
+.\setup.ps1 -LocalDeveloper
+```
+
+**For CI/CD Environments:**
 ```powershell
 .\setup.ps1
 ```
 
+**⚠️ IMPORTANT:** If you are a local developer running this on your machine, use the `-LocalDeveloper` flag. The script will detect if you're not in a CI/CD environment and warn you if the flag is missing.
+
 The script will:
-1. Display a welcome banner with installation details
-2. Prompt for confirmation to proceed
-3. Perform pre-flight system checks
-4. Install all configured tools in the correct order
-5. Display a comprehensive summary report
+1. Check if running in appropriate mode (CI/CD vs Local Developer)
+2. Display a welcome banner with installation details (LocalDeveloper mode)
+3. Prompt for confirmation to proceed
+4. Perform pre-flight system checks (admin, system requirements, internet - LocalDeveloper mode)
+5. Install all configured tools in the correct order
+6. Display a comprehensive summary report
 
 ### Step 5: Verify Installation
 

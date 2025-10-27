@@ -9,20 +9,31 @@
 
     DEFAULT BEHAVIOR: Runs in CI/CD mode (non-interactive, minimal checks)
     Use -LocalDeveloper flag for interactive local development installation
+
+    FAIL-FAST PROTECTION: If no CI/CD environment is detected and -LocalDeveloper
+    flag is not provided, the script will warn you and prompt for confirmation.
+    This prevents accidentally running in CI/CD mode on a local developer machine.
 .PARAMETER ConfigPath
     Path to the configuration file (default: .\config\tools-config.json)
 .PARAMETER LocalDeveloper
     Run in local developer mode with admin checks, system validation, and user prompts
     Without this flag, runs in CI/CD mode (non-interactive, skips unnecessary checks)
 .EXAMPLE
-    .\setup.ps1
-    # Runs in CI/CD mode (default) - no prompts, minimal checks
-.EXAMPLE
     .\setup.ps1 -LocalDeveloper
-    # Runs in local developer mode - admin checks, system validation, user prompts
+    # RECOMMENDED for local developers - admin checks, system validation, user prompts
+.EXAMPLE
+    .\setup.ps1
+    # Runs in CI/CD mode on TeamCity, GitHub Actions, Jenkins, etc.
+    # Will prompt if no CI/CD environment detected
 .NOTES
     CI/CD Mode (default): Optimized for automated environments
     Local Developer Mode: Full validation and interactive prompts
+
+    Detected CI/CD Environments:
+    - TeamCity (TEAMCITY_VERSION)
+    - GitHub Actions (GITHUB_ACTIONS)
+    - Jenkins (JENKINS_HOME)
+    - Generic CI (CI environment variable)
 #>
 
 [CmdletBinding()]
@@ -45,6 +56,58 @@ Import-Module "$modulePath\AdminCheck.psm1" -Force
 Import-Module "$modulePath\ColorConfig.psm1" -Force
 Import-Module "$modulePath\ErrorHandling.psm1" -Force
 Import-Module "$modulePath\SystemCheck.psm1" -Force
+
+# ============================================================================
+# FAIL-FAST: Detect if script should be run with -LocalDeveloper flag
+# ============================================================================
+
+$isTeamCity = [bool]$env:TEAMCITY_VERSION
+$isCI = [bool]($env:CI -or $env:GITHUB_ACTIONS -or $env:JENKINS_HOME -or $env:TEAMCITY_VERSION)
+
+if (-not $isCI -and -not $LocalDeveloper) {
+    Write-Host ""
+    Write-Host "================================================================" -ForegroundColor Yellow
+    Write-Host "     WARNING: Possible Incorrect Usage" -ForegroundColor Yellow
+    Write-Host "================================================================" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "This script is running in CI/CD mode (default), but no CI/CD" -ForegroundColor White
+    Write-Host "environment was detected." -ForegroundColor White
+    Write-Host ""
+    Write-Host "CI/CD mode is optimized for automated environments and:" -ForegroundColor White
+    Write-Host "  - Skips administrator privilege checks" -ForegroundColor DarkGray
+    Write-Host "  - Skips system requirement validation" -ForegroundColor DarkGray
+    Write-Host "  - Skips user prompts and confirmations" -ForegroundColor DarkGray
+    Write-Host "  - May not provide the best local development experience" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "If you are a LOCAL DEVELOPER running this on your machine," -ForegroundColor Cyan
+    Write-Host "you should use the -LocalDeveloper flag instead:" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  .\setup.ps1 -LocalDeveloper" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "This will enable:" -ForegroundColor White
+    Write-Host "  + Administrator privilege checks" -ForegroundColor Green
+    Write-Host "  + System requirement validation" -ForegroundColor Green
+    Write-Host "  + Internet connectivity checks" -ForegroundColor Green
+    Write-Host "  + User confirmations and prompts" -ForegroundColor Green
+    Write-Host "  + Better error messages and guidance" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "================================================================" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Do you want to continue in CI/CD mode anyway? (Y/N): " -ForegroundColor Yellow -NoNewline
+
+    $response = Read-Host
+    if ($response -notmatch '^[Yy]') {
+        Write-Host ""
+        Write-Host "Setup cancelled. Please re-run with -LocalDeveloper flag:" -ForegroundColor Cyan
+        Write-Host "  .\setup.ps1 -LocalDeveloper" -ForegroundColor Green
+        Write-Host ""
+        exit 0
+    }
+
+    Write-Host ""
+    Write-Host "Continuing in CI/CD mode as requested..." -ForegroundColor Yellow
+    Write-Host ""
+}
 
 function Show-WelcomeBanner {
     <#
