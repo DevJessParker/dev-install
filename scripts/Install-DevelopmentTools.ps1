@@ -855,10 +855,365 @@ function Install-NodeViaNvm {
     }
 }
 
+function Get-InstallationWaves {
+    <#
+    .SYNOPSIS
+        Organizes tools into installation waves based on dependencies
+    .DESCRIPTION
+        Groups tools so that:
+        - Bootstrap tools (chocolatey, powershellget) are in Wave 0
+        - Independent tools are grouped into Wave 1 for parallel installation
+        - Tools with dependencies are placed in subsequent waves
+    .PARAMETER InstallOrder
+        Array of tool keys in installation order
+    .PARAMETER Tools
+        Hashtable of tool configurations
+    .OUTPUTS
+        Array of waves, where each wave is an array of tool keys that can be installed in parallel
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [array]$InstallOrder,
+
+        [Parameter(Mandatory = $true)]
+        $Tools
+    )
+
+    $waves = @()
+    $processedTools = @()
+
+    # Wave 0: Bootstrap tools (must be sequential)
+    $bootstrapTools = @("chocolatey", "powershellget")
+    $waves += ,@($bootstrapTools | Where-Object { $_ -in $InstallOrder })
+    $processedTools += $bootstrapTools
+
+    # Build remaining waves based on dependencies
+    $remainingTools = $InstallOrder | Where-Object { $_ -notin $processedTools }
+
+    while ($remainingTools.Count -gt 0) {
+        $currentWave = @()
+
+        foreach ($toolKey in $remainingTools) {
+            $tool = $Tools.$toolKey
+            $dependencies = $tool.dependsOn
+
+            # Check if all dependencies are satisfied
+            $canInstall = $true
+            if ($dependencies) {
+                foreach ($dep in $dependencies) {
+                    if ($dep -notin $processedTools) {
+                        $canInstall = $false
+                        break
+                    }
+                }
+            }
+
+            if ($canInstall) {
+                $currentWave += $toolKey
+            }
+        }
+
+        if ($currentWave.Count -eq 0) {
+            # No tools can be installed (circular dependency or missing dependency)
+            Write-WarningLog "Unable to resolve dependencies for remaining tools: $($remainingTools -join ', ')"
+            break
+        }
+
+        $waves += ,$currentWave
+        $processedTools += $currentWave
+        $remainingTools = $remainingTools | Where-Object { $_ -notin $processedTools }
+    }
+
+    return $waves
+}
+
+function Install-ToolsInParallel {
+    <#
+    .SYNOPSIS
+        Installs multiple tools in parallel using PowerShell jobs
+    .PARAMETER ToolKeys
+        Array of tool keys to install in parallel
+    .PARAMETER Tools
+        Hashtable of tool configurations
+    .PARAMETER ConfigPath
+        Path to configuration file
+    .OUTPUTS
+        Hashtable with results: @{ Succeeded = @(); Failed = @(); Skipped = @() }
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [array]$ToolKeys,
+
+        [Parameter(Mandatory = $true)]
+        $Tools,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigPath
+    )
+
+    $results = @{
+        Succeeded = @()
+        Failed = @()
+        Skipped = @()
+    }
+
+    # If only one tool, install sequentially (no parallelization overhead)
+    if ($ToolKeys.Count -eq 1) {
+        $toolKey = $ToolKeys[0]
+        $tool = $Tools.$toolKey
+        $result = Install-SingleTool -ToolKey $toolKey -Tool $tool -ConfigPath $ConfigPath
+
+        # Update tracking based on result
+        if ($result.Status -eq "Success") {
+            $results.Succeeded += $result
+            if ($result.IsUpdate) {
+                Add-UpdatedTool -Name $result.ToolKey -OldVersion $result.OldVersion -NewVersion $result.Version
+            }
+            else {
+                Add-InstalledTool -Name $result.ToolKey -Version $result.Version
+            }
+        }
+        elseif ($result.Status -eq "Failed") {
+            $results.Failed += $result
+            Add-FailedTool -Name $result.ToolKey -Error $result.Message
+        }
+        else {
+            $results.Skipped += $result
+            Add-SkippedTool -Name $result.ToolKey -Version $result.Version -Reason $result.Reason
+        }
+
+        return $results
+    }
+
+    # Parallel installation using jobs
+    Write-InfoMessage "Installing $($ToolKeys.Count) tools in parallel..."
+
+    $jobs = @()
+    $scriptPath = $PSScriptRoot
+
+    foreach ($toolKey in $ToolKeys) {
+        $tool = $Tools.$toolKey
+
+        # Create job to install this tool
+        $job = Start-Job -ScriptBlock {
+            param($ToolKey, $Tool, $ConfigPath, $ScriptPath)
+
+            # Import modules in job context
+            $modulePath = Join-Path -Path $ScriptPath -ChildPath ".." | Join-Path -ChildPath "modules"
+            Import-Module (Join-Path -Path $modulePath -ChildPath "ColorConfig.psm1") -Force
+            Import-Module (Join-Path -Path $modulePath -ChildPath "ErrorHandling.psm1") -Force
+            Import-Module (Join-Path -Path $modulePath -ChildPath "VersionManagement.psm1") -Force
+
+            # Import main script functions (dot-source the script)
+            $mainScript = Join-Path -Path $ScriptPath -ChildPath "Install-DevelopmentTools.ps1"
+            . $mainScript
+
+            # Install the tool
+            try {
+                $result = Install-SingleTool -ToolKey $ToolKey -Tool $Tool -ConfigPath $ConfigPath
+                return $result
+            }
+            catch {
+                return @{
+                    ToolKey = $ToolKey
+                    Status = "Failed"
+                    Message = $_.Exception.Message
+                }
+            }
+        } -ArgumentList $toolKey, $tool, $ConfigPath, $scriptPath
+
+        $jobs += @{
+            Job = $job
+            ToolKey = $toolKey
+        }
+    }
+
+    # Wait for all jobs with progress indication
+    $completed = 0
+    $total = $jobs.Count
+
+    while ($completed -lt $total) {
+        Start-Sleep -Milliseconds 500
+
+        foreach ($jobInfo in $jobs) {
+            if ($jobInfo.Job.State -eq 'Completed' -and -not $jobInfo.Processed) {
+                $jobInfo.Processed = $true
+                $completed++
+
+                # Receive job result
+                $result = Receive-Job -Job $jobInfo.Job
+                Remove-Job -Job $jobInfo.Job
+
+                # Update tracking based on result
+                if ($result.Status -eq "Success") {
+                    $results.Succeeded += $result
+                    if ($result.IsUpdate) {
+                        Add-UpdatedTool -Name $result.ToolKey -OldVersion $result.OldVersion -NewVersion $result.Version
+                    }
+                    else {
+                        Add-InstalledTool -Name $result.ToolKey -Version $result.Version
+                    }
+                    Write-SuccessMessage "[$completed/$total] $($jobInfo.ToolKey) - Installed"
+                }
+                elseif ($result.Status -eq "Failed") {
+                    $results.Failed += $result
+                    Add-FailedTool -Name $result.ToolKey -Error $result.Message
+                    Write-ErrorMessage "[$completed/$total] $($jobInfo.ToolKey) - Failed"
+                }
+                else {
+                    $results.Skipped += $result
+                    Add-SkippedTool -Name $result.ToolKey -Version $result.Version -Reason $result.Reason
+                    Write-InfoMessage "[$completed/$total] $($jobInfo.ToolKey) - Skipped"
+                }
+
+                # TeamCity service message
+                if ($env:TEAMCITY_VERSION) {
+                    $status = if ($result.Status -eq "Success") { "NORMAL" } else { "WARNING" }
+                    Write-Output "##teamcity[message text='$($jobInfo.ToolKey): $($result.Status)' status='$status']"
+                }
+            }
+            elseif ($jobInfo.Job.State -eq 'Failed' -and -not $jobInfo.Processed) {
+                $jobInfo.Processed = $true
+                $completed++
+
+                $failedResult = @{
+                    ToolKey = $jobInfo.ToolKey
+                    Status = "Failed"
+                    Message = "Job execution failed"
+                }
+                $results.Failed += $failedResult
+                Add-FailedTool -Name $jobInfo.ToolKey -Error "Job execution failed"
+
+                Write-ErrorMessage "[$completed/$total] $($jobInfo.ToolKey) - Job Failed"
+                Remove-Job -Job $jobInfo.Job -Force
+            }
+        }
+    }
+
+    return $results
+}
+
+function Install-SingleTool {
+    <#
+    .SYNOPSIS
+        Installs a single tool (used by both sequential and parallel installation)
+    .PARAMETER ToolKey
+        Tool identifier key
+    .PARAMETER Tool
+        Tool configuration object
+    .PARAMETER ConfigPath
+        Path to configuration file
+    .OUTPUTS
+        Hashtable with result: @{ ToolKey = ""; Status = "Success|Failed|Skipped"; Version = ""; Message = "" }
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ToolKey,
+
+        [Parameter(Mandatory = $true)]
+        $Tool,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ConfigPath
+    )
+
+    $toolName = $ToolKey
+    $version = $Tool.version
+    $source = $Tool.source
+    $packageName = if ($Tool.packageName) { $Tool.packageName } else { $ToolKey }
+
+    try {
+        # Check current version
+        $installedVersion = Get-InstalledToolVersion -ToolName $ToolKey -PackageName $packageName -Source $source
+        $versionCheck = Test-ToolVersion -InstalledVersion $installedVersion -RequiredVersion $version -ToolName $toolName -AllowNewer $false
+
+        # Already at correct version
+        if ($versionCheck.VersionMatch -and -not $versionCheck.NeedsInstall) {
+            return @{
+                ToolKey = $ToolKey
+                Status = "Skipped"
+                Version = $installedVersion
+                Message = "Already at correct version"
+                Reason = "Correct version already installed"
+            }
+        }
+
+        # Uninstall if version mismatch
+        $isUpdate = $false
+        if ($versionCheck.IsInstalled -and ($versionCheck.NeedsUpgrade -or $versionCheck.NeedsDowngrade)) {
+            if ($source -eq "chocolatey") {
+                choco uninstall $packageName -y 2>&1 | Out-Null
+            }
+            elseif ($source -eq "powershellgallery") {
+                Uninstall-Module -Name $packageName -AllVersions -Force -ErrorAction SilentlyContinue
+            }
+
+            Update-SessionEnvironment
+            $isUpdate = $true
+        }
+
+        # Install based on source
+        $installSuccess = $false
+        switch ($source.ToLower()) {
+            "chocolatey" {
+                Install-ChocolateyPackage -PackageName $packageName -Version $version -ToolName $toolName -Force | Out-Null
+                $installSuccess = ($LASTEXITCODE -eq 0 -or (Get-ChocoPackageVersion -PackageName $packageName))
+            }
+            "powershellgallery" {
+                Install-PowerShellModule -ModuleName $packageName -Version $version -ToolName $toolName -Force | Out-Null
+                $installSuccess = (Get-PowerShellModuleVersion -ModuleName $packageName)
+            }
+            "nvm" {
+                Install-NodeViaNvm -Version $version | Out-Null
+                $installSuccess = (Get-NodeVersion)
+            }
+            default {
+                return @{
+                    ToolKey = $ToolKey
+                    Status = "Failed"
+                    Message = "Unknown source: $source"
+                }
+            }
+        }
+
+        # Refresh environment after installation
+        Update-SessionEnvironment
+
+        if ($installSuccess) {
+            $newVersion = Get-InstalledToolVersion -ToolName $ToolKey -PackageName $packageName -Source $source
+            return @{
+                ToolKey = $ToolKey
+                Status = "Success"
+                Version = $newVersion
+                Message = "Installed successfully"
+                IsUpdate = $isUpdate
+                OldVersion = if ($isUpdate) { $installedVersion } else { $null }
+            }
+        }
+        else {
+            return @{
+                ToolKey = $ToolKey
+                Status = "Failed"
+                Message = "Installation command returned error"
+            }
+        }
+    }
+    catch {
+        return @{
+            ToolKey = $ToolKey
+            Status = "Failed"
+            Message = $_.Exception.Message
+        }
+    }
+}
+
 function Install-DevelopmentTools {
     <#
     .SYNOPSIS
-        Main function to install all development tools
+        Main function to install all development tools with parallel installation support
     #>
     [CmdletBinding()]
     param(
@@ -890,90 +1245,84 @@ function Install-DevelopmentTools {
 
     Write-InfoMessage "Total tools to process: $($installOrder.Count)"
 
-    # Process each tool in order
-    $stepNumber = 1
+    # Organize tools into installation waves based on dependencies
+    $waves = Get-InstallationWaves -InstallOrder $installOrder -Tools $tools
+
+    Write-InfoMessage "Installation organized into $($waves.Count) waves"
+
+    $totalToolsProcessed = 0
     $totalSteps = $installOrder.Count
 
-    foreach ($toolKey in $installOrder) {
-        Write-StepMessage -StepNumber $stepNumber -TotalSteps $totalSteps -Message "Processing: $toolKey"
+    # Process each wave
+    for ($waveIndex = 0; $waveIndex -lt $waves.Count; $waveIndex++) {
+        $currentWave = $waves[$waveIndex]
+        $waveNumber = $waveIndex + 1
 
-        $tool = $tools.$toolKey
-        if (-not $tool) {
-            Write-WarningLog "Tool configuration not found for: $toolKey"
-            $stepNumber++
-            continue
-        }
+        Write-HeaderMessage "Wave $waveNumber/$($waves.Count): $($currentWave.Count) tool(s)"
 
-        $toolName = $toolKey
-        $version = $tool.version
-        $source = $tool.source
-        $packageName = if ($tool.packageName) { $tool.packageName } else { $toolKey }
+        # Wave 0 (Bootstrap): Install sequentially
+        if ($waveIndex -eq 0 -and ($currentWave -contains "chocolatey" -or $currentWave -contains "powershellget")) {
+            Write-InfoMessage "Installing bootstrap tools sequentially..."
 
-        # Special handling for Chocolatey
-        if ($toolKey -eq "chocolatey") {
-            Install-Chocolatey -Config $tool | Out-Null
-            $stepNumber++
-            continue
-        }
+            foreach ($toolKey in $currentWave) {
+                $totalToolsProcessed++
+                Write-StepMessage -StepNumber $totalToolsProcessed -TotalSteps $totalSteps -Message "Processing: $toolKey"
 
-        # Special handling for PowerShellGet (bootstrap)
-        if ($toolKey -eq "powershellget") {
-            Install-PowerShellGet | Out-Null
-            $stepNumber++
-            continue
-        }
+                $tool = $tools.$toolKey
+                if (-not $tool) {
+                    Write-WarningLog "Tool configuration not found for: $toolKey"
+                    continue
+                }
 
-        # Check current version
-        $installedVersion = Get-InstalledToolVersion -ToolName $toolKey -PackageName $packageName -Source $source
-        $versionCheck = Test-ToolVersion -InstalledVersion $installedVersion -RequiredVersion $version -ToolName $toolName -AllowNewer $false
+                # Special handling for Chocolatey
+                if ($toolKey -eq "chocolatey") {
+                    Install-Chocolatey -Config $tool | Out-Null
+                    continue
+                }
 
-        # Determine action needed
-        if ($versionCheck.VersionMatch -and -not $versionCheck.NeedsInstall) {
-            Write-InfoMessage "$toolName is already at the correct version ($installedVersion)"
-            Add-SkippedTool -Name $toolName -Version $installedVersion -Reason "Correct version already installed"
-            $stepNumber++
-            continue
-        }
-
-        # Uninstall if version mismatch
-        if ($versionCheck.IsInstalled -and ($versionCheck.NeedsUpgrade -or $versionCheck.NeedsDowngrade)) {
-            Write-WarningMessage "Removing existing $toolName version $installedVersion"
-
-            if ($source -eq "chocolatey") {
-                choco uninstall $packageName -y 2>&1 | Out-Null
+                # Special handling for PowerShellGet
+                if ($toolKey -eq "powershellget") {
+                    Install-PowerShellGet | Out-Null
+                    continue
+                }
             }
-            elseif ($source -eq "powershellgallery") {
-                Uninstall-Module -Name $packageName -AllVersions -Force -ErrorAction SilentlyContinue
-            }
-
-            Update-SessionEnvironment
-            Add-UpdatedTool -Name $toolName -OldVersion $installedVersion -NewVersion $version
         }
+        # Subsequent waves: Install in parallel
+        else {
+            Write-InfoMessage "Installing $($currentWave.Count) tools in parallel..."
 
-        # Install based on source
-        switch ($source.ToLower()) {
-            "chocolatey" {
-                Install-ChocolateyPackage -PackageName $packageName -Version $version -ToolName $toolName -Force | Out-Null
+            $waveResults = Install-ToolsInParallel -ToolKeys $currentWave -Tools $tools -ConfigPath $ConfigPath
+
+            # Update tool tracking based on results
+            foreach ($result in $waveResults.Succeeded) {
+                $totalToolsProcessed++
             }
-            "powershellgallery" {
-                Install-PowerShellModule -ModuleName $packageName -Version $version -ToolName $toolName -Force | Out-Null
+            foreach ($result in $waveResults.Failed) {
+                $totalToolsProcessed++
             }
-            "nvm" {
-                # Special handling for Node.js via NVM
-                Install-NodeViaNvm -Version $version | Out-Null
+            foreach ($result in $waveResults.Skipped) {
+                $totalToolsProcessed++
             }
-            default {
-                Write-WarningLog "Unknown installation source: $source for $toolName"
+
+            # Display wave summary
+            if ($waveResults.Succeeded.Count -gt 0) {
+                Write-SuccessMessage "Wave $waveNumber: $($waveResults.Succeeded.Count) tool(s) installed successfully"
+            }
+            if ($waveResults.Failed.Count -gt 0) {
+                Write-WarningMessage "Wave $waveNumber: $($waveResults.Failed.Count) tool(s) failed"
+            }
+            if ($waveResults.Skipped.Count -gt 0) {
+                Write-InfoMessage "Wave $waveNumber: $($waveResults.Skipped.Count) tool(s) skipped"
             }
         }
 
-        # Refresh environment after installation
+        # Refresh environment after each wave
         Update-SessionEnvironment
 
-        $stepNumber++
+        Write-ColorOutput "" -Color White
     }
 
-    Write-SuccessMessage "Tool installation process completed"
+    Write-SuccessMessage "Tool installation process completed ($totalToolsProcessed tools processed)"
     return $true
 }
 

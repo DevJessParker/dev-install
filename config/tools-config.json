@@ -37,7 +37,8 @@
       "version": "~18.19.1",
       "source": "nvm",
       "setAsDefault": true,
-      "description": "Node.js JavaScript runtime"
+      "description": "Node.js JavaScript runtime",
+      "dependsOn": ["nvm"]
     },
     "yarn": {
       "version": "~1.22.22",
@@ -103,7 +104,8 @@
       "version": "~4.1.39",
       "packageName": "AWS.Tools.S3",
       "source": "powershellgallery",
-      "description": "AWS S3 Tools for PowerShell"
+      "description": "AWS S3 Tools for PowerShell",
+      "dependsOn": ["aws.tools.installer"]
     },
     "sqlserver": {
       "version": "~21.1.18221",
