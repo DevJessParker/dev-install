@@ -1306,13 +1306,13 @@ function Install-DevelopmentTools {
 
             # Display wave summary
             if ($waveResults.Succeeded.Count -gt 0) {
-                Write-SuccessMessage "Wave $waveNumber: $($waveResults.Succeeded.Count) tool(s) installed successfully"
+                Write-SuccessMessage "Wave ${waveNumber}: $($waveResults.Succeeded.Count) tool(s) installed successfully"
             }
             if ($waveResults.Failed.Count -gt 0) {
-                Write-WarningMessage "Wave $waveNumber: $($waveResults.Failed.Count) tool(s) failed"
+                Write-WarningMessage "Wave ${waveNumber}: $($waveResults.Failed.Count) tool(s) failed"
             }
             if ($waveResults.Skipped.Count -gt 0) {
-                Write-InfoMessage "Wave $waveNumber: $($waveResults.Skipped.Count) tool(s) skipped"
+                Write-InfoMessage "Wave ${waveNumber}: $($waveResults.Skipped.Count) tool(s) skipped"
             }
         }
 
