@@ -150,6 +150,72 @@ function Test-PowerShellSyntax {
     }
 }
 
+function Test-PowerShell6PlusCmdlets {
+    <#
+    .SYNOPSIS
+        Checks for PowerShell 6+ cmdlets that aren't compatible with PowerShell 5.1
+    .DESCRIPTION
+        Detects usage of cmdlets like Join-String that were introduced in PowerShell 6+
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$Fix
+    )
+
+    $content = Get-Content -Path $FilePath -Raw
+    $lines = Get-Content -Path $FilePath
+
+    # List of PowerShell 6+ cmdlets to check for
+    $ps6PlusCmdlets = @(
+        @{
+            Name = 'Join-String'
+            Pattern = 'Join-String\s+-Separator'
+            Suggestion = 'Use -join operator: ($array) -join ''separator'''
+        }
+    )
+
+    $issues = @()
+    $lineNumber = 0
+
+    foreach ($line in $lines) {
+        $lineNumber++
+
+        # Skip comments
+        if ($line -match '^\s*#') {
+            continue
+        }
+
+        foreach ($cmdlet in $ps6PlusCmdlets) {
+            if ($line -match $cmdlet.Pattern) {
+                $issues += [PSCustomObject]@{
+                    File = $FilePath
+                    Line = $lineNumber
+                    Cmdlet = $cmdlet.Name
+                    Issue = "PowerShell 6+ cmdlet '$($cmdlet.Name)' is not compatible with PowerShell 5.1"
+                    Suggestion = $cmdlet.Suggestion
+                    Content = $line.Trim()
+                }
+            }
+        }
+    }
+
+    if ($issues.Count -gt 0) {
+        Write-Host "`n❌ COMPATIBILITY ERRORS in $FilePath" -ForegroundColor Red
+        foreach ($issue in $issues) {
+            Write-Host "  Line $($issue.Line): $($issue.Issue)" -ForegroundColor Red
+            Write-Host "    $($issue.Content)" -ForegroundColor DarkGray
+            Write-Host "    💡 Suggestion: $($issue.Suggestion)" -ForegroundColor Yellow
+        }
+
+        return $issues.Count
+    }
+
+    return 0
+}
+
 # Main validation logic
 Write-Host "=====================================" -ForegroundColor Cyan
 Write-Host "PowerShell Syntax Validation" -ForegroundColor Cyan
@@ -177,7 +243,11 @@ foreach ($file in $files) {
     $syntaxErrors = Test-PowerShellSyntax -FilePath $file.FullName
     $script:ErrorCount += $syntaxErrors
 
-    if ($varColonErrors -eq 0 -and $syntaxErrors -eq 0) {
+    # Check 3: PowerShell 6+ cmdlet compatibility
+    $compatErrors = Test-PowerShell6PlusCmdlets -FilePath $file.FullName
+    $script:ErrorCount += $compatErrors
+
+    if ($varColonErrors -eq 0 -and $syntaxErrors -eq 0 -and $compatErrors -eq 0) {
         Write-Host "  ✓ No issues found" -ForegroundColor Green
     }
 }

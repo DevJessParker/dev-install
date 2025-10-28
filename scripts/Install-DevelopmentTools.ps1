@@ -1076,7 +1076,7 @@ function Install-ToolsInParallel {
 
     # Display initial job status
     Write-InfoMessage "Started $($jobs.Count) parallel installation jobs"
-    Write-InfoMessage "Job IDs: $($jobs | ForEach-Object { "$($_.ToolKey)=$($_.Job.Id)" } | Join-String -Separator ', ')"
+    Write-InfoMessage "Job IDs: $(($jobs | ForEach-Object { "$($_.ToolKey)=$($_.Job.Id)" }) -join ', ')"
 
     # Wait for all jobs with progress indication
     $completed = 0

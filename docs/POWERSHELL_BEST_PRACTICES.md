@@ -116,6 +116,23 @@ if ($LASTEXITCODE -eq 0) { $cmd2 }
 $value = if ($condition) { $true } else { $false }
 ```
 
+**PowerShell 6+ Cmdlets to Avoid:**
+
+```powershell
+# ❌ BAD - Join-String (PS 6+ only)
+$items | Join-String -Separator ', '
+
+# ✅ GOOD - Use -join operator
+($items) -join ', '
+$items -join ', '
+
+# ❌ BAD - ForEach-Object with Join-String
+$jobs | ForEach-Object { $_.Name } | Join-String -Separator '; '
+
+# ✅ GOOD - Wrap in parentheses for -join
+($jobs | ForEach-Object { $_.Name }) -join '; '
+```
+
 ### 4. Cmdlet Parameter Splat
 
 ```powershell
