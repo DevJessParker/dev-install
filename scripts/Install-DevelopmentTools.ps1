@@ -633,24 +633,44 @@ function Install-Chocolatey {
 function Get-BaseVersionFromExpression {
     <#
     .SYNOPSIS
-        Extracts the base version number from a version expression
+        Converts semantic version expressions to Chocolatey-compatible version strings
     .DESCRIPTION
-        Strips version range operators (~, ^, >=, >, <=, <) to get the base version number.
-        This is needed for package managers that don't support semantic versioning operators.
+        Chocolatey has specific version matching behavior:
+        - "2.1.0" = exact version 2.1.0
+        - "2.1" = latest version in 2.1.x family (e.g., 2.1.9)
+        - "2" = latest version in 2.x family (e.g., 2.5.3)
+
+        This function converts semantic versioning operators for optimal Chocolatey matching:
+        - "~2.1.0" (patch updates) -> "2.1" (latest 2.1.x)
+        - "~2.1.5" (patch updates) -> "2.1" (latest 2.1.x)
+        - "^2.1.0" (minor updates) -> "2" (latest 2.x)
+        - ">=2.1.0" -> "2.1.0" (exact, Chocolatey doesn't support >= well)
+        - "2.1.0" -> "2.1.0" (exact)
+        - "latest" -> "latest"
+
     .PARAMETER VersionExpression
         The version expression (e.g., "~1.2.3", "^2.0.0", ">=3.1.0", "1.2.3", "latest")
+    .PARAMETER PackageManager
+        The package manager type (chocolatey, powershellgallery, nvm) - default: chocolatey
     .EXAMPLE
-        Get-BaseVersionFromExpression -VersionExpression "~1.22.22"
-        Returns: "1.22.22"
+        Get-BaseVersionFromExpression -VersionExpression "~2.1.0"
+        Returns: "2.1" (installs latest 2.1.x like 2.1.9)
     .EXAMPLE
-        Get-BaseVersionFromExpression -VersionExpression ">=2.0.6"
-        Returns: "2.0.6"
+        Get-BaseVersionFromExpression -VersionExpression "^2.1.0"
+        Returns: "2" (installs latest 2.x like 2.5.3)
+    .EXAMPLE
+        Get-BaseVersionFromExpression -VersionExpression "2.1.0"
+        Returns: "2.1.0" (installs exactly 2.1.0)
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$VersionExpression
+        [string]$VersionExpression,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("chocolatey", "powershellgallery", "nvm")]
+        [string]$PackageManager = "chocolatey"
     )
 
     # Return "latest" as-is
@@ -658,8 +678,40 @@ function Get-BaseVersionFromExpression {
         return "latest"
     }
 
-    # Strip operators: ~, ^, >=, >, <=, <
-    $baseVersion = $VersionExpression -replace '[\^~]|>=|>|<=|<', ''
+    # Handle tilde operator: ~2.1.0 means ">=2.1.0 <2.2.0" (patch updates)
+    # For Chocolatey, convert to "2.1" which installs latest 2.1.x
+    if ($VersionExpression -match '^~(\d+)\.(\d+)(\.(\d+))?') {
+        $major = $matches[1]
+        $minor = $matches[2]
+        if ($PackageManager -eq "chocolatey") {
+            Write-Verbose "Tilde version ~$major.$minor.x -> $major.$minor (latest patch)"
+            return "$major.$minor"
+        }
+        # For other package managers, strip the tilde
+        return $VersionExpression -replace '^~', ''
+    }
+
+    # Handle caret operator: ^2.1.0 means ">=2.1.0 <3.0.0" (minor updates)
+    # For Chocolatey, convert to "2" which installs latest 2.x
+    if ($VersionExpression -match '^\^(\d+)(\.(\d+))?(\.(\d+))?') {
+        $major = $matches[1]
+        if ($PackageManager -eq "chocolatey") {
+            Write-Verbose "Caret version ^$major.x.x -> $major (latest minor)"
+            return "$major"
+        }
+        # For other package managers, strip the caret
+        return $VersionExpression -replace '^\^', ''
+    }
+
+    # Handle >= operator: use exact version (Chocolatey doesn't support >= well)
+    if ($VersionExpression -match '^>=(.+)') {
+        $version = $matches[1].Trim()
+        Write-Verbose "Greater-or-equal version >=$version -> $version (exact)"
+        return $version
+    }
+
+    # Strip any remaining operators: >, <=, <
+    $baseVersion = $VersionExpression -replace '^[><]=?', ''
     $baseVersion = $baseVersion.Trim()
 
     return $baseVersion
@@ -688,10 +740,22 @@ function Install-ChocolateyPackage {
     Write-ProgressMessage "Installing $ToolName via Chocolatey..."
 
     try {
-        # Extract base version (strip semantic version operators that Chocolatey doesn't understand)
-        $chocoVersion = Get-BaseVersionFromExpression -VersionExpression $Version
+        # Extract base version and convert to Chocolatey format (supports version families)
+        $chocoVersion = Get-BaseVersionFromExpression -VersionExpression $Version -PackageManager "chocolatey"
 
-        Write-InfoMessage "Requesting Chocolatey to install $PackageName version: $chocoVersion (from expression: $Version)"
+        # Log version resolution for transparency
+        if ($Version -ne $chocoVersion) {
+            Write-InfoMessage "Version expression '$Version' resolved to '$chocoVersion' for Chocolatey"
+            if ($Version -match '^~') {
+                Write-InfoMessage "  Installing latest patch version in the $chocoVersion.x family"
+            }
+            elseif ($Version -match '^\^') {
+                Write-InfoMessage "  Installing latest minor version in the $chocoVersion.x.x family"
+            }
+        }
+        else {
+            Write-InfoMessage "Installing $PackageName version: $chocoVersion"
+        }
 
         $chocoArgs = @("install", $PackageName, "-y")
 
@@ -708,10 +772,19 @@ function Install-ChocolateyPackage {
         $chocoArgs += "--accept-license"           # Accept license agreements automatically
         $chocoArgs += "--no-progress"              # Disable progress bars (cleaner CI logs)
 
-        # SOC2/HIPAA Compliance: DO NOT bypass checksum verification
+        # SOC2/HIPAA Compliance: ENFORCE checksum verification
         # Checksums are critical for ensuring package integrity and preventing tampering
-        # If a package fails checksum verification, the installation should fail
-        # This ensures compliance with security audit requirements
+        # The following flags ENABLE checksum verification (default behavior):
+        # - Chocolatey automatically downloads and verifies checksums from package metadata
+        # - If checksum verification fails, installation is aborted
+        # - This ensures compliance with security audit requirements
+        #
+        # NOTE: We explicitly DO NOT use these insecure flags:
+        # - --ignore-checksums (SECURITY RISK - bypasses all checksum verification)
+        # - --allow-empty-checksums (SECURITY RISK - allows packages without checksums)
+        # - --allow-empty-checksums-secure (SECURITY RISK - allows empty checksums over HTTPS)
+        #
+        # Checksum verification is REQUIRED for SOC2/HIPAA compliance
 
         # Install package and capture output
         $output = & choco @chocoArgs 2>&1
@@ -725,11 +798,42 @@ function Install-ChocolateyPackage {
             # Check if reboot is required
             $rebootRequired = $LASTEXITCODE -eq 3010 -or $outputString -match "reboot|restart"
 
+            # Verify checksum was validated (parse Chocolatey output)
+            $checksumVerified = $false
+            $checksumType = "Unknown"
+            if ($outputString -match "checksum64.*verified|checksum.*verified|checksumType.*sha256|checksumType.*sha512|checksumType.*md5") {
+                $checksumVerified = $true
+                if ($outputString -match "checksumType.*:(sha256|sha512|md5)" -or $outputString -match "(SHA256|SHA512|MD5).*verified") {
+                    $checksumType = $matches[1].ToUpper()
+                }
+            }
+            # Also check for "Using checksum" or "Verifying checksum" messages
+            elseif ($outputString -match "Using checksum|Verifying checksum|checksum type") {
+                $checksumVerified = $true
+            }
+
             if ($rebootRequired) {
                 Write-WarningMessage "$ToolName installed successfully but REBOOT REQUIRED"
                 Write-ColorOutput "  NOTE: Some components require a system restart to complete installation" -Color Yellow
             } else {
                 Write-SuccessMessage "$ToolName installed successfully"
+            }
+
+            # Log checksum verification status
+            if ($checksumVerified) {
+                Write-InfoMessage "  Package integrity verified via checksum ($checksumType)"
+
+                # Log security audit event
+                if (Get-Command -Name Write-SecurityAudit -ErrorAction SilentlyContinue) {
+                    Write-SecurityAudit -Action "ChecksumVerify" -Component $PackageName `
+                        -Status "Success" `
+                        -Details "Package checksum verified successfully ($checksumType)" `
+                        -Severity "Info"
+                }
+            }
+            else {
+                # Checksum verification status unclear from output
+                Write-InfoMessage "  Package integrity: Chocolatey default verification applied"
             }
 
             # Get the installed version
@@ -738,14 +842,22 @@ function Install-ChocolateyPackage {
 
             # Compliance audit logging
             if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
-                $auditDetails = "Chocolatey package installed successfully with checksum verification"
+                $auditDetails = "Chocolatey package installed successfully"
+                if ($checksumVerified) {
+                    $auditDetails += " with $checksumType checksum verification"
+                }
+                else {
+                    $auditDetails += " with Chocolatey default checksum verification"
+                }
                 if ($rebootRequired) {
                     $auditDetails += " (reboot required)"
                 }
+
                 Write-PackageAudit -Action "Install" -PackageName $PackageName `
                     -Version $(if ($installedVer) { $installedVer } else { $chocoVersion }) `
                     -Source "chocolatey" -Status "Success" `
-                    -Details $auditDetails
+                    -Details $auditDetails `
+                    -Checksum $(if ($checksumVerified) { "$checksumType verified" } else { "Default verification" })
             }
         }
         else {
@@ -1368,10 +1480,26 @@ function Install-ToolsInParallel {
                     Write-InfoMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - Skipped"
                 }
 
-                # TeamCity service message
+                # TeamCity service messages for better CI integration
                 if ($env:TEAMCITY_VERSION) {
-                    $status = if ($result.Status -eq "Success") { "NORMAL" } else { "WARNING" }
+                    $status = if ($result.Status -eq "Success") { "NORMAL" } elseif ($result.Status -eq "Failed") { "ERROR" } else { "WARNING" }
+
+                    # Report tool installation status
                     Write-Output "##teamcity[message text='$($jobInfo.ToolKey): $($result.Status)' status='$status']"
+
+                    # Report build statistics for dashboards
+                    if ($result.Status -eq "Success") {
+                        Write-Output "##teamcity[buildStatisticValue key='toolsInstalled' value='1']"
+                    }
+                    elseif ($result.Status -eq "Failed") {
+                        Write-Output "##teamcity[buildStatisticValue key='toolsFailed' value='1']"
+                        # Report as build problem for visibility
+                        $escapedText = $result.Message -replace "'", "|'" -replace "\|", "||" -replace "\[", "|[" -replace "\]", "|]" -replace "\r", "|r" -replace "\n", "|n"
+                        Write-Output "##teamcity[buildProblem description='Failed to install $($jobInfo.ToolKey): $escapedText' identity='tool-install-$($jobInfo.ToolKey)']"
+                    }
+                    elseif ($result.Status -eq "Skipped") {
+                        Write-Output "##teamcity[buildStatisticValue key='toolsSkipped' value='1']"
+                    }
                 }
 
                 # Start a new job if there are pending tools (maintain concurrency limit)
@@ -1937,8 +2065,22 @@ if (-not $script:IsBeingDotSourced) {
         Show-ErrorSummary
     }
 
-    # Close main TeamCity block
+    # Report final build statistics for TeamCity dashboards
     if (Test-TeamCityEnvironment) {
+        Write-Output "##teamcity[buildStatisticValue key='toolsTotal' value='$($script:installedTools.Count + $script:updatedTools.Count + $script:skippedTools.Count + $script:failedTools.Count)']"
+        Write-Output "##teamcity[buildStatisticValue key='toolsInstalledTotal' value='$($script:installedTools.Count)']"
+        Write-Output "##teamcity[buildStatisticValue key='toolsUpdatedTotal' value='$($script:updatedTools.Count)']"
+        Write-Output "##teamcity[buildStatisticValue key='toolsSkippedTotal' value='$($script:skippedTools.Count)']"
+        Write-Output "##teamcity[buildStatisticValue key='toolsFailedTotal' value='$($script:failedTools.Count)']"
+
+        # Set build status
+        if ($script:failedTools.Count -gt 0) {
+            Write-Output "##teamcity[buildStatus status='FAILURE' text='$($script:failedTools.Count) tool(s) failed to install']"
+        }
+        elseif ($script:installedTools.Count -gt 0 -or $script:updatedTools.Count -gt 0) {
+            Write-Output "##teamcity[buildStatus status='SUCCESS' text='All tools installed successfully']"
+        }
+
         Close-TeamCityBlock -Name "Development Environment Setup - Tool Installation"
     }
 
