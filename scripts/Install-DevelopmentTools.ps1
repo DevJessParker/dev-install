@@ -23,85 +23,96 @@ param(
     [string]$ConfigPath = "$PSScriptRoot\..\config\tools-config.json"
 )
 
-# Resolve ConfigPath to absolute path immediately to avoid context issues in jobs
-if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
-    $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath $ConfigPath | Resolve-Path -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path
-    if (-not $ConfigPath) {
-        # If Resolve-Path fails (file doesn't exist yet), construct absolute path manually
-        $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath "..\config\tools-config.json"))
+# =============================================================================
+# INITIALIZATION CODE
+# Only runs when script is executed directly, not when dot-sourced
+# =============================================================================
+$script:IsBeingDotSourced = $MyInvocation.InvocationName -eq '.'
+
+if (-not $script:IsBeingDotSourced) {
+    # Resolve ConfigPath to absolute path immediately to avoid context issues in jobs
+    if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
+        $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath $ConfigPath | Resolve-Path -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path
+        if (-not $ConfigPath) {
+            # If Resolve-Path fails (file doesn't exist yet), construct absolute path manually
+            $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath "..\config\tools-config.json"))
+        }
+    }
+
+    # Script initialization
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $script:ScriptStartTime = Get-Date
+    $script:CancellationRequested = $false
+
+    # CTRL+C handler for graceful exit
+    trap {
+        $script:CancellationRequested = $true
+        Write-Host "`n`nCTRL+C detected. Cleaning up and exiting..." -ForegroundColor Yellow
+
+        # Clean up any running background jobs
+        $runningJobs = Get-Job | Where-Object { $_.State -eq 'Running' }
+        if ($runningJobs) {
+            Write-Host "Stopping $($runningJobs.Count) background job(s)..." -ForegroundColor Yellow
+            $runningJobs | Stop-Job
+            $runningJobs | Remove-Job -Force
+        }
+
+        Write-Host "Cleanup complete. Exiting..." -ForegroundColor Gray
+        exit 130  # Standard exit code for CTRL+C
+    }
+
+    # OS Detection
+    $script:IsWindows = ($PSVersionTable.PSVersion.Major -le 5) -or $IsWindows
+    $script:IsLinux = (Get-Variable -Name "IsLinux" -ErrorAction SilentlyContinue) -and $IsLinux
+    $script:IsMacOS = (Get-Variable -Name "IsMacOS" -ErrorAction SilentlyContinue) -and $IsMacOS
+
+    # Early exit for non-Windows platforms
+    if (-not $script:IsWindows) {
+        Write-Host "================================================================" -ForegroundColor Yellow
+        Write-Host "     PLATFORM NOT SUPPORTED" -ForegroundColor Yellow
+        Write-Host "================================================================" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "This installation script is designed for Windows environments." -ForegroundColor White
+        Write-Host "Detected OS: $($PSVersionTable.OS)" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "For Linux/macOS installations, please use platform-specific" -ForegroundColor White
+        Write-Host "package managers (apt, yum, brew, etc.)." -ForegroundColor White
+        Write-Host ""
+        Write-Host "Exiting gracefully..." -ForegroundColor Gray
+        exit 0
+    }
+
+    # Import required modules (using Join-Path for cross-platform compatibility)
+    $modulePath = Join-Path -Path $PSScriptRoot -ChildPath ".." | Join-Path -ChildPath "modules"
+    Import-Module (Join-Path -Path $modulePath -ChildPath "AdminCheck.psm1") -Force
+    Import-Module (Join-Path -Path $modulePath -ChildPath "ColorConfig.psm1") -Force
+    Import-Module (Join-Path -Path $modulePath -ChildPath "ErrorHandling.psm1") -Force
+    Import-Module (Join-Path -Path $modulePath -ChildPath "SystemCheck.psm1") -Force
+    Import-Module (Join-Path -Path $modulePath -ChildPath "VersionManagement.psm1") -Force
+
+    # Early validation: Fail fast if configuration file doesn't exist
+    if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
+        Write-Host "================================================================" -ForegroundColor Red
+        Write-Host "     CONFIGURATION FILE NOT FOUND" -ForegroundColor Red
+        Write-Host "================================================================" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "ERROR: Configuration file not found:" -ForegroundColor Red
+        Write-Host "  $ConfigPath" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Expected location:" -ForegroundColor White
+        Write-Host "  $PSScriptRoot\..\config\tools-config.json" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "Please ensure the configuration file exists before running this script." -ForegroundColor White
+        Write-Host ""
+        exit 1
     }
 }
 
-# Script initialization
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-$script:ScriptStartTime = Get-Date
-$script:CancellationRequested = $false
-
-# CTRL+C handler for graceful exit
-trap {
-    $script:CancellationRequested = $true
-    Write-Host "`n`nCTRL+C detected. Cleaning up and exiting..." -ForegroundColor Yellow
-
-    # Clean up any running background jobs
-    $runningJobs = Get-Job | Where-Object { $_.State -eq 'Running' }
-    if ($runningJobs) {
-        Write-Host "Stopping $($runningJobs.Count) background job(s)..." -ForegroundColor Yellow
-        $runningJobs | Stop-Job
-        $runningJobs | Remove-Job -Force
-    }
-
-    Write-Host "Cleanup complete. Exiting..." -ForegroundColor Gray
-    exit 130  # Standard exit code for CTRL+C
-}
-
-# OS Detection
-$script:IsWindows = ($PSVersionTable.PSVersion.Major -le 5) -or $IsWindows
-$script:IsLinux = (Get-Variable -Name "IsLinux" -ErrorAction SilentlyContinue) -and $IsLinux
-$script:IsMacOS = (Get-Variable -Name "IsMacOS" -ErrorAction SilentlyContinue) -and $IsMacOS
-
-# Early exit for non-Windows platforms
-if (-not $script:IsWindows) {
-    Write-Host "================================================================" -ForegroundColor Yellow
-    Write-Host "     PLATFORM NOT SUPPORTED" -ForegroundColor Yellow
-    Write-Host "================================================================" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "This installation script is designed for Windows environments." -ForegroundColor White
-    Write-Host "Detected OS: $($PSVersionTable.OS)" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "For Linux/macOS installations, please use platform-specific" -ForegroundColor White
-    Write-Host "package managers (apt, yum, brew, etc.)." -ForegroundColor White
-    Write-Host ""
-    Write-Host "Exiting gracefully..." -ForegroundColor Gray
-    exit 0
-}
-
-# Import required modules (using Join-Path for cross-platform compatibility)
-$modulePath = Join-Path -Path $PSScriptRoot -ChildPath ".." | Join-Path -ChildPath "modules"
-Import-Module (Join-Path -Path $modulePath -ChildPath "AdminCheck.psm1") -Force
-Import-Module (Join-Path -Path $modulePath -ChildPath "ColorConfig.psm1") -Force
-Import-Module (Join-Path -Path $modulePath -ChildPath "ErrorHandling.psm1") -Force
-Import-Module (Join-Path -Path $modulePath -ChildPath "SystemCheck.psm1") -Force
-Import-Module (Join-Path -Path $modulePath -ChildPath "VersionManagement.psm1") -Force
-
-# Early validation: Fail fast if configuration file doesn't exist
-if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
-    Write-Host "================================================================" -ForegroundColor Red
-    Write-Host "     CONFIGURATION FILE NOT FOUND" -ForegroundColor Red
-    Write-Host "================================================================" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "ERROR: Configuration file not found:" -ForegroundColor Red
-    Write-Host "  $ConfigPath" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Expected location:" -ForegroundColor White
-    Write-Host "  $PSScriptRoot\..\config\tools-config.json" -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "Please ensure the configuration file exists before running this script." -ForegroundColor White
-    Write-Host ""
-    exit 1
-}
-
-# Script-level variables (tracking tool installation with versions)
+# =============================================================================
+# SCRIPT-LEVEL VARIABLES
+# Always initialized, regardless of how script is loaded
+# =============================================================================
 $script:installedTools = @()
 $script:skippedTools = @()
 $script:failedTools = @()
@@ -1459,9 +1470,13 @@ function Install-DevelopmentTools {
     return $true
 }
 
-# Main execution
-try {
-    Write-HeaderMessage "Development Environment Setup - Tool Installation"
+# =============================================================================
+# MAIN EXECUTION
+# Only runs when script is executed directly, not when dot-sourced
+# =============================================================================
+if (-not $script:IsBeingDotSourced) {
+    try {
+        Write-HeaderMessage "Development Environment Setup - Tool Installation"
 
     # Step 1: Initialize PSGallery and prerequisites (critical for CI/CD)
     Write-StepMessage -StepNumber 1 -TotalSteps 3 -Message "Configuring PSGallery and NuGet provider"
@@ -1557,15 +1572,16 @@ try {
         exit 1
     }
 
-    exit 0
-}
-catch {
-    Write-ErrorLog -Message "Unhandled exception in installation script" -Exception $_.Exception -Fatal
-
-    # Close main TeamCity block on error
-    if (Test-TeamCityEnvironment) {
-        Close-TeamCityBlock -Name "Development Environment Setup - Tool Installation"
+        exit 0
     }
+    catch {
+        Write-ErrorLog -Message "Unhandled exception in installation script" -Exception $_.Exception -Fatal
 
-    exit 1
+        # Close main TeamCity block on error
+        if (Test-TeamCityEnvironment) {
+            Close-TeamCityBlock -Name "Development Environment Setup - Tool Installation"
+        }
+
+        exit 1
+    }
 }

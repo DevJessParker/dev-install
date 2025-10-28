@@ -248,6 +248,44 @@ if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
 - Relative paths become invalid when $PSScriptRoot changes
 - Always resolve paths to absolute before passing to jobs
 
+### 9. Detecting Dot-Sourcing vs Direct Execution
+
+**Problem:** When a script is dot-sourced to import functions, initialization code shouldn't run. But when executed directly, it should run normally.
+
+```powershell
+# Detect if script is being dot-sourced
+$script:IsBeingDotSourced = $MyInvocation.InvocationName -eq '.'
+
+# Only run initialization when executed directly
+if (-not $script:IsBeingDotSourced) {
+    # Path resolution
+    # Module imports
+    # Configuration validation
+    # etc.
+}
+
+# Function definitions (always loaded)
+function Install-Tool {
+    # Function body
+}
+
+# Main execution (only when executed directly)
+if (-not $script:IsBeingDotSourced) {
+    try {
+        # Main script logic
+        Install-Tool
+    }
+    catch {
+        # Error handling
+    }
+}
+```
+
+**Use cases:**
+- Scripts that are both executable and dot-sourceable for function reuse
+- Background jobs that need to import functions without running initialization
+- Test scripts that dot-source functions for unit testing
+
 ## Common Pitfalls to Avoid
 
 1. **Unquoted variable with colon**: `$var:text` → Use `${var}:text`
