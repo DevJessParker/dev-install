@@ -136,6 +136,61 @@ aws --version
 docker --version
 ```
 
+## Uninstalling
+
+To completely remove all development tools and reset your environment:
+
+### Uninstall All Tools
+
+**For Local Developers (Recommended):**
+```powershell
+.\uninstall.ps1 -LocalDeveloper
+```
+
+This will:
+1. Display a list of tools to be removed
+2. Ask for confirmation (type 'UNINSTALL' to proceed)
+3. Remove all installed tools in reverse dependency order
+4. Generate a compliance audit log of all removals
+5. Display a comprehensive summary
+
+**For CI/CD Environments:**
+```powershell
+.\uninstall.ps1 -Force
+```
+
+### Keep Chocolatey Installed
+
+If you want to remove all tools but keep Chocolatey package manager:
+
+```powershell
+.\uninstall.ps1 -LocalDeveloper -KeepChocolatey
+```
+
+### What Gets Removed
+
+- ✅ All Chocolatey packages (Node.js, Docker, .NET, AWS CLI, 7-Zip, curl, k6, etc.)
+- ✅ All PowerShell modules (PSake, AWS.Tools, SqlServer, etc.)
+- ✅ All Node.js versions installed via NVM
+- ✅ NVM (Node Version Manager)
+- ✅ Chocolatey package manager (unless `-KeepChocolatey` is used)
+- ✅ Environment PATH cleanup
+
+### Safety Features
+
+- 🔒 **Double Confirmation**: Requires 'Y' and then typing 'UNINSTALL' to proceed
+- 🔒 **Admin Check**: Ensures script runs with administrator privileges
+- 🔒 **Compliance Audit**: Logs all removal operations for SOC2/HIPAA compliance
+- 🔒 **Dependency Handling**: Removes tools in reverse order to prevent breaking dependencies
+- 🔒 **Error Handling**: Continues even if individual tools fail to uninstall
+
+### After Uninstalling
+
+After running the uninstall script:
+1. **Close all PowerShell windows**
+2. **Open a new Administrator PowerShell**
+3. Run `setup.ps1` again if you need to reinstall tools
+
 ## Installed Tools
 
 The following tools are installed by default (versions are configurable):
@@ -163,7 +218,8 @@ The following tools are installed by default (versions are configurable):
 ```
 dev-install/
 │
-├── setup.ps1                          # Main orchestrator script
+├── setup.ps1                          # Main installation orchestrator
+├── uninstall.ps1                      # Main uninstall orchestrator
 │
 ├── config/
 │   └── tools-config.json              # Tool versions and configuration
@@ -177,7 +233,8 @@ dev-install/
 │   └── VersionManagement.psm1         # Version checking and comparison
 │
 ├── scripts/
-│   └── Install-DevelopmentTools.ps1   # Development tools installation
+│   ├── Install-DevelopmentTools.ps1   # Development tools installation
+│   └── Uninstall-DevelopmentTools.ps1 # Development tools removal
 │
 ├── BuildScript/
 │   └── install-docker-ce.ps1          # Docker CE installation for CI/CD
@@ -637,6 +694,15 @@ For issues, questions, or suggestions:
 **Maintained By:** [Your Team Name]
 
 ## Recent Changes
+
+### Version 2.1 (2025-01-28)
+- ✅ **Uninstall Script**: Added comprehensive `uninstall.ps1` to safely remove all development tools
+- ✅ **Explicit Checksum Verification**: Parse and log checksum types (SHA256, SHA512, MD5) for compliance
+- ✅ **Version Family Support**: `~3.1.0` installs latest 3.1.x patch version automatically
+- ✅ **Enhanced TeamCity Integration**: Build statistics, build problems, and proper formatting
+- ✅ **Exit Code 3010 Support**: Correctly handle "success but reboot required" from Chocolatey
+- ✅ **Job Timeout Protection**: 15-minute timeout prevents hung installations
+- ✅ **Better Error Messages**: Configuration errors now show actionable remediation steps
 
 ### Version 2.0 (2025-01-28)
 - ✅ **Parallel Chocolatey Installations**: Packages now install in parallel with concurrency control (max 4 concurrent)
