@@ -86,7 +86,9 @@
       "version": "~4.12.0",
       "packageName": "docker-desktop",
       "source": "chocolatey",
-      "description": "Docker Desktop for Windows"
+      "description": "Docker Desktop for Windows (local) / Docker CE (CI)",
+      "ciScript": "BuildScript\\install-docker-ce.ps1",
+      "useCiScriptInCi": true
     },
     "psake": {
       "version": "~4.9.0",
@@ -124,6 +126,7 @@
   "installationOrder": [
     "chocolatey",
     "powershellget",
+    "docker-desktop",
     "nvm",
     "node",
     "yarn",
@@ -133,7 +136,6 @@
     "netfx-devpack",
     "curl",
     "k6",
-    "docker-desktop",
     "psake",
     "aws.tools.installer",
     "aws.tools.s3",

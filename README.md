@@ -38,6 +38,8 @@ This repository contains modular PowerShell scripts designed to automate the set
 - **CI/CD Ready**: Detects TeamCity, GitHub Actions, Jenkins, and other CI/CD environments
 - **Parallel Installation**: Tools install in parallel waves for 73% faster execution
 - **TeamCity Integration**: Automatic service messages and collapsible log blocks
+- **Conditional Docker Installation**: Automatically installs Docker CE in CI environments or Docker Desktop for local development
+- **.NET Tool Restore**: Automatically restores .NET local tools if manifest exists
 - **Dev Summary Reports**: Detailed summary at the end of each script execution
 - **Colored Terminal Output**: Easy-to-read color-coded console messages
 
@@ -137,7 +139,7 @@ The following tools are installed by default (versions are configurable):
 | **.NET Framework DevPack** | 4.7.2 | .NET Framework developer pack |
 | **cURL** | Latest | Data transfer tool |
 | **K6** | Latest | Load testing tool |
-| **Docker Desktop** | 4.12.0 | Container platform |
+| **Docker Desktop / CE** | 4.12.0 | Container platform (Desktop for local, CE for CI) |
 | **PSake** | 4.9.0 | PowerShell build automation |
 | **AWS.Tools.Installer** | 1.0.2.4 | AWS PowerShell tools installer |
 | **AWS.Tools.S3** | 4.1.39.0 | AWS S3 PowerShell module |
@@ -162,6 +164,12 @@ dev-install/
 │
 ├── scripts/
 │   └── Install-DevelopmentTools.ps1   # Development tools installation
+│
+├── BuildScript/
+│   └── install-docker-ce.ps1          # Docker CE installation for CI/CD
+│
+├── docs/
+│   └── POWERSHELL_BEST_PRACTICES.md   # PowerShell coding standards
 │
 └── README.md                          # This file
 ```

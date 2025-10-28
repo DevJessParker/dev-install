@@ -1270,6 +1270,55 @@ function Install-SingleTool {
     $packageName = if ($Tool.packageName) { $Tool.packageName } else { $ToolKey }
 
     try {
+        # Check if this tool has a CI-specific installation script
+        $isCI = [bool]($env:CI -or $env:GITHUB_ACTIONS -or $env:JENKINS_HOME -or $env:TEAMCITY_VERSION)
+        if ($isCI -and $Tool.useCiScriptInCi -and $Tool.ciScript) {
+            Write-InfoMessage "CI environment detected, using CI-specific installation script"
+
+            # Resolve script path relative to config path
+            $configDir = Split-Path -Path $ConfigPath -Parent
+            $ciScriptPath = Join-Path -Path $configDir -ChildPath ".." | Join-Path -ChildPath $Tool.ciScript
+
+            if (Test-Path -Path $ciScriptPath) {
+                Write-InfoMessage "Executing CI script: $ciScriptPath"
+                try {
+                    $output = & $ciScriptPath 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        # Get version after CI script installation
+                        $newVersion = Get-InstalledToolVersion -ToolName $ToolKey -PackageName $packageName -Source $source
+                        if (-not $newVersion) {
+                            $newVersion = "installed"
+                        }
+
+                        return @{
+                            ToolKey = $ToolKey
+                            Status = "Success"
+                            Version = $newVersion
+                            Message = "Installed via CI script"
+                        }
+                    }
+                    else {
+                        return @{
+                            ToolKey = $ToolKey
+                            Status = "Failed"
+                            Message = "CI script exited with code $LASTEXITCODE"
+                        }
+                    }
+                }
+                catch {
+                    return @{
+                        ToolKey = $ToolKey
+                        Status = "Failed"
+                        Message = "CI script execution failed: $($_.Exception.Message)"
+                    }
+                }
+            }
+            else {
+                Write-WarningLog "CI script not found: $ciScriptPath. Falling back to standard installation."
+                # Continue with normal installation below
+            }
+        }
+
         # Check current version
         $installedVersion = Get-InstalledToolVersion -ToolName $ToolKey -PackageName $packageName -Source $source
         $versionCheck = Test-ToolVersion -InstalledVersion $installedVersion -RequiredVersion $version -ToolName $toolName -AllowNewer $false
@@ -1485,6 +1534,37 @@ function Install-DevelopmentTools {
     }
 
     Write-SuccessMessage "Tool installation process completed ($totalToolsProcessed tools processed)"
+
+    # Post-installation: Restore .NET local tools if dotnet is installed and tools manifest exists
+    $dotnetInstalled = $script:installedTools | Where-Object { $_.Name -eq "dotnetcore-sdk" }
+    $dotnetAlreadyInstalled = $script:skippedTools | Where-Object { $_.Name -eq "dotnetcore-sdk" }
+
+    if ($dotnetInstalled -or $dotnetAlreadyInstalled) {
+        # Look for .config/dotnet-tools.json in repository root
+        $repoRoot = Split-Path -Path $ConfigPath -Parent | Split-Path -Parent
+        $dotnetToolsManifest = Join-Path -Path $repoRoot -ChildPath ".config" | Join-Path -ChildPath "dotnet-tools.json"
+
+        if (Test-Path -Path $dotnetToolsManifest) {
+            Write-InfoMessage "Found .NET tools manifest: $dotnetToolsManifest"
+            Write-ProgressMessage "Restoring .NET local tools..."
+
+            try {
+                Push-Location -Path $repoRoot
+                $restoreOutput = dotnet tool restore 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    Write-SuccessMessage ".NET local tools restored successfully"
+                }
+                else {
+                    Write-WarningLog "dotnet tool restore completed with warnings or errors: $restoreOutput"
+                }
+                Pop-Location
+            }
+            catch {
+                Write-WarningLog "Failed to restore .NET local tools: $($_.Exception.Message)"
+                Pop-Location
+            }
+        }
+    }
 
     # Close main function block
     if (Test-TeamCityEnvironment) {
