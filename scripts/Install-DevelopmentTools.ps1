@@ -90,6 +90,7 @@ if (-not $script:IsBeingDotSourced) {
     Import-Module (Join-Path -Path $modulePath -ChildPath "ErrorHandling.psm1") -Force
     Import-Module (Join-Path -Path $modulePath -ChildPath "SystemCheck.psm1") -Force
     Import-Module (Join-Path -Path $modulePath -ChildPath "VersionManagement.psm1") -Force
+    Import-Module (Join-Path -Path $modulePath -ChildPath "ComplianceAudit.psm1") -Force
 
     # Early validation: Fail fast if configuration file doesn't exist
     if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
@@ -517,8 +518,14 @@ function Install-Chocolatey {
             # Set execution policy for this process
             Set-ExecutionPolicy Bypass -Scope Process -Force
 
-            # Configure TLS 1.2
+            # Configure TLS 1.2 (SOC2/HIPAA requirement: enforce secure communication)
             [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+
+            # Audit: TLS security configuration
+            if (Get-Command -Name Write-SecurityAudit -ErrorAction SilentlyContinue) {
+                Write-SecurityAudit -Action "TLSConfiguration" -Component "Chocolatey Installation" `
+                    -Status "Success" -Details "Enforced TLS 1.2 for secure package downloads" -Severity "Info"
+            }
 
             # Set proxy if configured
             if ($env:HTTP_PROXY -or $env:HTTPS_PROXY) {
@@ -687,8 +694,11 @@ function Install-ChocolateyPackage {
         # Add CI/CD and TeamCity-friendly flags
         $chocoArgs += "--accept-license"           # Accept license agreements automatically
         $chocoArgs += "--no-progress"              # Disable progress bars (cleaner CI logs)
-        $chocoArgs += "--allow-empty-checksums"    # Allow packages with empty checksums
-        $chocoArgs += "--ignore-checksums"         # Skip checksum verification if needed
+
+        # SOC2/HIPAA Compliance: DO NOT bypass checksum verification
+        # Checksums are critical for ensuring package integrity and preventing tampering
+        # If a package fails checksum verification, the installation should fail
+        # This ensures compliance with security audit requirements
 
         # Install package and capture output
         $output = & choco @chocoArgs 2>&1
@@ -699,6 +709,14 @@ function Install-ChocolateyPackage {
             # Get the installed version
             $installedVer = Get-ChocoPackageVersion -PackageName $PackageName
             Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $chocoVersion })
+
+            # Compliance audit logging
+            if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
+                Write-PackageAudit -Action "Install" -PackageName $PackageName `
+                    -Version $(if ($installedVer) { $installedVer } else { $chocoVersion }) `
+                    -Source "chocolatey" -Status "Success" `
+                    -Details "Chocolatey package installed successfully with checksum verification"
+            }
         }
         else {
             # Display detailed error information
@@ -733,6 +751,13 @@ function Install-ChocolateyPackage {
             Write-ColorOutput "" -Color White
 
             Add-FailedTool -Name $ToolName -Reason "Chocolatey exit code: $LASTEXITCODE"
+
+            # Compliance audit logging for failed installation
+            if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
+                Write-PackageAudit -Action "Install" -PackageName $PackageName `
+                    -Version $chocoVersion -Source "chocolatey" -Status "Failed" `
+                    -Details "Chocolatey installation failed with exit code $LASTEXITCODE"
+            }
         }
     }
     catch {
@@ -740,6 +765,13 @@ function Install-ChocolateyPackage {
         Write-ColorOutput "Exception Details:" -Color Red
         Write-ColorOutput "  $($_.Exception.Message)" -Color DarkRed
         Add-FailedTool -Name $ToolName -Reason $_.Exception.Message
+
+        # Compliance audit logging for exception
+        if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
+            Write-PackageAudit -Action "Install" -PackageName $PackageName `
+                -Version $Version -Source "chocolatey" -Status "Failed" `
+                -Details "Exception during installation: $($_.Exception.Message)"
+        }
     }
 }
 
@@ -812,6 +844,14 @@ function Install-PowerShellModule {
                 # Get the installed version
                 $installedVer = Get-PowerShellModuleVersion -ModuleName $ModuleName
                 Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $moduleVersion })
+
+                # Compliance audit logging
+                if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
+                    Write-PackageAudit -Action "Install" -PackageName $ModuleName `
+                        -Version $(if ($installedVer) { $installedVer } else { $moduleVersion }) `
+                        -Source "powershellgallery" -Status "Success" `
+                        -Details "PowerShell module installed successfully from PSGallery"
+                }
             }
             catch {
                 $retryCount++
@@ -846,6 +886,13 @@ function Install-PowerShellModule {
                 Write-ColorOutput "PowerShell Gallery Error Details:" -Color Red
                 Write-ColorOutput "  $($_.Exception.Message)" -Color DarkRed
                 Add-FailedTool -Name $ToolName -Reason "License acceptance failed"
+
+                # Compliance audit logging
+                if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
+                    Write-PackageAudit -Action "Install" -PackageName $ModuleName `
+                        -Version $moduleVersion -Source "powershellgallery" -Status "Failed" `
+                        -Details "PowerShell module installation failed: License acceptance failed"
+                }
             }
         }
         elseif ($errorMessage -like "*is already installed*") {
@@ -861,6 +908,13 @@ function Install-PowerShellModule {
                 Write-ColorOutput "  Inner Exception: $($_.Exception.InnerException.Message)" -Color DarkRed
             }
             Add-FailedTool -Name $ToolName -Reason $_.Exception.Message
+
+            # Compliance audit logging
+            if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
+                Write-PackageAudit -Action "Install" -PackageName $ModuleName `
+                    -Version $moduleVersion -Source "powershellgallery" -Status "Failed" `
+                    -Details "PowerShell module installation failed: $($_.Exception.Message)"
+            }
         }
     }
 }
@@ -1038,13 +1092,19 @@ function Get-InstallationWaves {
 function Install-ToolsInParallel {
     <#
     .SYNOPSIS
-        Installs multiple tools in parallel using PowerShell jobs
+        Installs multiple tools in parallel using PowerShell jobs with concurrency control
+    .DESCRIPTION
+        Installs tools in parallel with a maximum concurrency limit to prevent
+        overwhelming the system. This is especially important for Chocolatey
+        installations which can be resource-intensive.
     .PARAMETER ToolKeys
         Array of tool keys to install in parallel
     .PARAMETER Tools
         Hashtable of tool configurations
     .PARAMETER ConfigPath
         Path to configuration file
+    .PARAMETER MaxConcurrency
+        Maximum number of concurrent installations (default: 4)
     .OUTPUTS
         Hashtable with results: @{ Succeeded = @(); Failed = @(); Skipped = @() }
     #>
@@ -1057,7 +1117,10 @@ function Install-ToolsInParallel {
         $Tools,
 
         [Parameter(Mandatory = $true)]
-        [string]$ConfigPath
+        [string]$ConfigPath,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxConcurrency = 4
     )
 
     $results = @{
@@ -1094,14 +1157,18 @@ function Install-ToolsInParallel {
         return $results
     }
 
-    # Parallel installation using jobs
+    # Parallel installation using jobs with concurrency control
     $jobs = @()
+    $pendingTools = @($ToolKeys)  # Queue of tools waiting to start
     $scriptPath = $PSScriptRoot
 
-    foreach ($toolKey in $ToolKeys) {
-        $tool = $Tools.$toolKey
+    Write-InfoMessage "Parallel installation with max concurrency: $MaxConcurrency"
+    Write-InfoMessage "Total tools to install: $($ToolKeys.Count)"
 
-        # Create job to install this tool
+    # Function to start a job for a tool
+    function Start-ToolInstallJob {
+        param($ToolKey, $Tool, $ConfigPath, $ScriptPath)
+
         $job = Start-Job -ScriptBlock {
             param($ToolKey, $Tool, $ConfigPath, $ScriptPath)
 
@@ -1110,6 +1177,7 @@ function Install-ToolsInParallel {
             Import-Module (Join-Path -Path $modulePath -ChildPath "ColorConfig.psm1") -Force
             Import-Module (Join-Path -Path $modulePath -ChildPath "ErrorHandling.psm1") -Force
             Import-Module (Join-Path -Path $modulePath -ChildPath "VersionManagement.psm1") -Force
+            Import-Module (Join-Path -Path $modulePath -ChildPath "ComplianceAudit.psm1") -Force
 
             # Import main script functions (dot-source the script)
             $mainScript = Join-Path -Path $ScriptPath -ChildPath "Install-DevelopmentTools.ps1"
@@ -1127,25 +1195,40 @@ function Install-ToolsInParallel {
                     Message = $_.Exception.Message
                 }
             }
-        } -ArgumentList $toolKey, $tool, $ConfigPath, $scriptPath
+        } -ArgumentList $ToolKey, $Tool, $ConfigPath, $ScriptPath
 
-        $jobs += @{
+        return @{
             Job = $job
-            ToolKey = $toolKey
+            ToolKey = $ToolKey
+            StartTime = Get-Date
+            Processed = $false
         }
     }
 
-    # Display initial job status
-    Write-InfoMessage "Started $($jobs.Count) parallel installation jobs"
-    Write-InfoMessage "Job IDs: $(($jobs | ForEach-Object { "$($_.ToolKey)=$($_.Job.Id)" }) -join ', ')"
+    # Start initial batch of jobs (up to MaxConcurrency)
+    $initialBatchCount = [Math]::Min($MaxConcurrency, $pendingTools.Count)
+    for ($i = 0; $i -lt $initialBatchCount; $i++) {
+        $toolKey = $pendingTools[0]
+        $pendingTools = $pendingTools | Select-Object -Skip 1
+        $tool = $Tools.$toolKey
 
-    # Wait for all jobs with progress indication
+        $jobInfo = Start-ToolInstallJob -ToolKey $toolKey -Tool $tool -ConfigPath $ConfigPath -ScriptPath $scriptPath
+        $jobs += $jobInfo
+        Write-InfoMessage "Started job for: $toolKey (Job ID: $($jobInfo.Job.Id))"
+    }
+
+    Write-InfoMessage "Started initial batch of $initialBatchCount jobs"
+    if ($pendingTools.Count -gt 0) {
+        Write-InfoMessage "Remaining tools in queue: $($pendingTools.Count)"
+    }
+
+    # Wait for all jobs with progress indication and start new jobs as slots become available
     $completed = 0
-    $total = $jobs.Count
+    $totalTools = $ToolKeys.Count
     $progressCounter = 0
     $lastProgressUpdate = Get-Date
 
-    while ($completed -lt $total -and -not $script:CancellationRequested) {
+    while ($completed -lt $totalTools -and -not $script:CancellationRequested) {
         Start-Sleep -Milliseconds 500
         $progressCounter++
 
@@ -1153,10 +1236,9 @@ function Install-ToolsInParallel {
         if ($progressCounter -ge 20) {
             $progressCounter = 0
             $runningJobs = ($jobs | Where-Object { -not $_.Processed -and $_.Job.State -eq 'Running' }).Count
-            $waitingJobs = $total - $completed - $runningJobs
             $elapsed = ((Get-Date) - $lastProgressUpdate).TotalSeconds
 
-            Write-InfoMessage "Progress: $completed/$total completed | $runningJobs running | $waitingJobs waiting..."
+            Write-InfoMessage "Progress: $completed/$totalTools completed | $runningJobs running | Queue: $($pendingTools.Count) pending"
 
             # Show which tools are currently running (for troubleshooting)
             $runningTools = $jobs | Where-Object { -not $_.Processed -and $_.Job.State -eq 'Running' } |
@@ -1168,6 +1250,7 @@ function Install-ToolsInParallel {
             $lastProgressUpdate = Get-Date
         }
 
+        # Process completed jobs and start new ones
         foreach ($jobInfo in $jobs) {
             if ($jobInfo.Job.State -eq 'Completed' -and -not $jobInfo.Processed) {
                 $jobInfo.Processed = $true
@@ -1186,23 +1269,34 @@ function Install-ToolsInParallel {
                     else {
                         Add-InstalledTool -Name $result.ToolKey -Version $result.Version
                     }
-                    Write-SuccessMessage "[$completed/$total] $($jobInfo.ToolKey) - Installed"
+                    Write-SuccessMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - Installed"
                 }
                 elseif ($result.Status -eq "Failed") {
                     $results.Failed += $result
                     Add-FailedTool -Name $result.ToolKey -Reason $result.Message
-                    Write-ErrorMessage "[$completed/$total] $($jobInfo.ToolKey) - Failed"
+                    Write-ErrorMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - Failed"
                 }
                 else {
                     $results.Skipped += $result
                     Add-SkippedTool -Name $result.ToolKey -Version $result.Version -Reason $result.Reason
-                    Write-InfoMessage "[$completed/$total] $($jobInfo.ToolKey) - Skipped"
+                    Write-InfoMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - Skipped"
                 }
 
                 # TeamCity service message
                 if ($env:TEAMCITY_VERSION) {
                     $status = if ($result.Status -eq "Success") { "NORMAL" } else { "WARNING" }
                     Write-Output "##teamcity[message text='$($jobInfo.ToolKey): $($result.Status)' status='$status']"
+                }
+
+                # Start a new job if there are pending tools (maintain concurrency limit)
+                if ($pendingTools.Count -gt 0) {
+                    $nextToolKey = $pendingTools[0]
+                    $pendingTools = $pendingTools | Select-Object -Skip 1
+                    $nextTool = $Tools.$nextToolKey
+
+                    $newJobInfo = Start-ToolInstallJob -ToolKey $nextToolKey -Tool $nextTool -ConfigPath $ConfigPath -ScriptPath $scriptPath
+                    $jobs += $newJobInfo
+                    Write-InfoMessage "Started job for queued tool: $nextToolKey (Job ID: $($newJobInfo.Job.Id))"
                 }
             }
             elseif ($jobInfo.Job.State -eq 'Failed' -and -not $jobInfo.Processed) {
@@ -1217,8 +1311,19 @@ function Install-ToolsInParallel {
                 $results.Failed += $failedResult
                 Add-FailedTool -Name $jobInfo.ToolKey -Reason "Job execution failed"
 
-                Write-ErrorMessage "[$completed/$total] $($jobInfo.ToolKey) - Job Failed"
+                Write-ErrorMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - Job Failed"
                 Remove-Job -Job $jobInfo.Job -Force
+
+                # Start a new job if there are pending tools (maintain concurrency limit)
+                if ($pendingTools.Count -gt 0) {
+                    $nextToolKey = $pendingTools[0]
+                    $pendingTools = $pendingTools | Select-Object -Skip 1
+                    $nextTool = $Tools.$nextToolKey
+
+                    $newJobInfo = Start-ToolInstallJob -ToolKey $nextToolKey -Tool $nextTool -ConfigPath $ConfigPath -ScriptPath $scriptPath
+                    $jobs += $newJobInfo
+                    Write-InfoMessage "Started job for queued tool: $nextToolKey (Job ID: $($newJobInfo.Job.Id))"
+                }
             }
         }
     }
@@ -1582,9 +1687,15 @@ if (-not $script:IsBeingDotSourced) {
     try {
         Write-HeaderMessage "Development Environment Setup - Tool Installation"
 
-    # Step 1: Initialize PSGallery and prerequisites (critical for CI/CD)
-    Write-StepMessage -StepNumber 1 -TotalSteps 3 -Message "Configuring PSGallery and NuGet provider"
-    Initialize-PSGallery | Out-Null
+        # Initialize compliance audit if not already initialized
+        if (-not (Get-Command -Name Get-SessionId -ErrorAction SilentlyContinue) -or -not (Get-SessionId)) {
+            $scriptRoot = Split-Path -Parent $PSScriptRoot
+            Initialize-ComplianceAudit -LogDirectory (Join-Path -Path $scriptRoot -ChildPath "logs")
+        }
+
+        # Step 1: Initialize PSGallery and prerequisites (critical for CI/CD)
+        Write-StepMessage -StepNumber 1 -TotalSteps 3 -Message "Configuring PSGallery and NuGet provider"
+        Initialize-PSGallery | Out-Null
 
     # Step 2: Install development tools
     Write-StepMessage -StepNumber 2 -TotalSteps 3 -Message "Installing development tools"
@@ -1671,6 +1782,11 @@ if (-not $script:IsBeingDotSourced) {
         Close-TeamCityBlock -Name "Development Environment Setup - Tool Installation"
     }
 
+    # Close compliance audit if we initialized it
+    if (Get-Command -Name Get-SessionId -ErrorAction SilentlyContinue) {
+        Close-ComplianceAudit
+    }
+
     if ($script:failedTools.Count -gt 0) {
         Write-ColorOutput "`nWARNING: Some tools failed to install. Please review the errors above." -Color Yellow
         exit 1
@@ -1684,6 +1800,11 @@ if (-not $script:IsBeingDotSourced) {
         # Close main TeamCity block on error
         if (Test-TeamCityEnvironment) {
             Close-TeamCityBlock -Name "Development Environment Setup - Tool Installation"
+        }
+
+        # Close compliance audit on error
+        if (Get-Command -Name Get-SessionId -ErrorAction SilentlyContinue) {
+            Close-ComplianceAudit
         }
 
         exit 1

@@ -65,6 +65,7 @@ Import-Module "$modulePath\AdminCheck.psm1" -Force
 Import-Module "$modulePath\ColorConfig.psm1" -Force
 Import-Module "$modulePath\ErrorHandling.psm1" -Force
 Import-Module "$modulePath\SystemCheck.psm1" -Force
+Import-Module "$modulePath\ComplianceAudit.psm1" -Force
 
 # ============================================================================
 # FAIL-FAST: Validate configuration file exists
@@ -231,6 +232,15 @@ function Invoke-PreFlightChecks {
     if ($LocalDeveloper) {
         Write-ProgressMessage "Checking administrator privileges..."
         Assert-IsAdmin -ScriptName "Development Environment Setup"
+
+        # Audit: Admin privilege check
+        if (Get-Command -Name Write-SecurityAudit -ErrorAction SilentlyContinue) {
+            $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            Write-SecurityAudit -Action "AdminCheck" -Component "Setup Script" `
+                -Status $(if ($isAdmin) { "Success" } else { "Failed" }) `
+                -Details "Administrator privilege verification: $(if ($isAdmin) { 'Elevated' } else { 'Not elevated' })" `
+                -Severity $(if ($isAdmin) { "Info" } else { "Critical" })
+        }
     }
 
     # Check 2: Configuration file (always check)
@@ -373,6 +383,9 @@ try {
     # Initialize
     Initialize-ErrorHandling
 
+    # Initialize compliance audit (SOC2/HIPAA requirement)
+    Initialize-ComplianceAudit -LogDirectory "$PSScriptRoot\logs"
+
     # Show welcome banner (skip in CI/CD mode)
     if ($LocalDeveloper) {
         Show-WelcomeBanner
@@ -417,6 +430,9 @@ catch {
     exit 1
 }
 finally {
+    # Close compliance audit session
+    Close-ComplianceAudit
+
     # Cleanup
     $ProgressPreference = 'Continue'
 }

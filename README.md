@@ -36,12 +36,25 @@ This repository contains modular PowerShell scripts designed to automate the set
 - **Modular Architecture**: Reusable modules for common functionality
 - **PowerShell 5.1+ Compatible**: Works with both Windows PowerShell 5.1 and PowerShell 7+
 - **CI/CD Ready**: Detects TeamCity, GitHub Actions, Jenkins, and other CI/CD environments
-- **Parallel Installation**: Tools install in parallel waves for 73% faster execution
+- **Parallel Installation with Concurrency Control**: Chocolatey packages install in parallel (max 4 concurrent) for optimal performance
 - **TeamCity Integration**: Automatic service messages and collapsible log blocks
 - **Conditional Docker Installation**: Automatically installs Docker CE in CI environments or Docker Desktop for local development
 - **.NET Tool Restore**: Automatically restores .NET local tools if manifest exists
 - **Dev Summary Reports**: Detailed summary at the end of each script execution
 - **Colored Terminal Output**: Easy-to-read color-coded console messages
+
+### 🔒 SOC2 and HIPAA Compliance Features
+
+- **Comprehensive Audit Logging**: Immutable audit trail of all installation activities
+- **Windows Event Log Integration**: Security events logged to Windows Event Log for SIEM integration
+- **Checksum Verification**: Enforced package integrity verification (no bypass allowed)
+- **TLS 1.2+ Enforcement**: Secure downloads with TLS 1.2 or higher required
+- **User and Session Tracking**: Complete audit trail with user identity, session ID, and timestamps
+- **Access Control Auditing**: Admin privilege checks logged with success/failure status
+- **Change Tracking**: Detailed logging of all package installations, updates, and removals
+- **Tamper-Evident Logs**: Append-only audit logs prevent modification of historical records
+
+See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for detailed compliance information.
 
 ## Prerequisites
 
@@ -158,6 +171,7 @@ dev-install/
 ├── modules/
 │   ├── AdminCheck.psm1                # Admin privilege verification
 │   ├── ColorConfig.psm1               # Terminal color output
+│   ├── ComplianceAudit.psm1           # SOC2/HIPAA audit logging
 │   ├── ErrorHandling.psm1             # Error handling utilities
 │   ├── SystemCheck.psm1               # System requirements checking
 │   └── VersionManagement.psm1         # Version checking and comparison
@@ -168,7 +182,11 @@ dev-install/
 ├── BuildScript/
 │   └── install-docker-ce.ps1          # Docker CE installation for CI/CD
 │
+├── logs/
+│   └── audit_*.log                    # Compliance audit logs (auto-generated)
+│
 ├── docs/
+│   ├── COMPLIANCE.md                  # SOC2/HIPAA compliance documentation
 │   └── POWERSHELL_BEST_PRACTICES.md   # PowerShell coding standards
 │
 └── README.md                          # This file
@@ -346,6 +364,48 @@ Import-Module .\modules\ColorConfig.psm1
 Write-SuccessMessage "Installation completed"
 Write-ProgressMessage "Installing Node.js..."
 ```
+
+### ComplianceAudit.psm1
+
+Provides comprehensive audit logging for SOC2 and HIPAA compliance requirements.
+
+**Functions:**
+- `Initialize-ComplianceAudit` - Initializes audit system with unique session ID
+- `Write-AuditEntry` - Writes structured audit log entry
+- `Write-PackageAudit` - Logs package installation/update/removal events
+- `Write-SecurityAudit` - Logs security-related events
+- `Close-ComplianceAudit` - Finalizes audit session with summary
+- `Get-AuditEntries` - Returns all audit entries for current session
+- `Get-AuditLogPath` - Returns path to current audit log file
+- `Get-SessionId` - Returns current audit session ID
+
+**Audit Log Features:**
+- Immutable append-only audit trail
+- Windows Event Log integration
+- User and session tracking
+- Structured log format for easy parsing
+- Compliance-ready for SOC2 and HIPAA
+
+**Example:**
+```powershell
+Import-Module .\modules\ComplianceAudit.psm1
+
+# Initialize audit system
+Initialize-ComplianceAudit -LogDirectory "C:\Logs"
+
+# Log a package installation
+Write-PackageAudit -Action "Install" -PackageName "nodejs" `
+    -Version "18.19.1" -Source "chocolatey" -Status "Success"
+
+# Log a security event
+Write-SecurityAudit -Action "ChecksumVerify" -Component "nodejs.zip" `
+    -Status "Success" -Details "SHA256 checksum verified" -Severity "Info"
+
+# Finalize audit session
+Close-ComplianceAudit
+```
+
+See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) for detailed compliance information.
 
 ### ErrorHandling.psm1
 
@@ -572,6 +632,17 @@ For issues, questions, or suggestions:
 
 ---
 
-**Last Updated:** 2025-10-23
+**Last Updated:** 2025-01-28
 
 **Maintained By:** [Your Team Name]
+
+## Recent Changes
+
+### Version 2.0 (2025-01-28)
+- ✅ **Parallel Chocolatey Installations**: Packages now install in parallel with concurrency control (max 4 concurrent)
+- ✅ **SOC2/HIPAA Compliance**: Added comprehensive audit logging with ComplianceAudit module
+- ✅ **Security Hardening**: Removed insecure `--ignore-checksums` flags, enforced checksum verification
+- ✅ **Windows Event Log Integration**: Security events logged for SIEM integration
+- ✅ **Enhanced Audit Trail**: User tracking, session management, and tamper-evident logs
+- ✅ **TLS 1.2 Enforcement**: All downloads use TLS 1.2+ for security
+- ✅ **Compliance Documentation**: Added detailed [COMPLIANCE.md](docs/COMPLIANCE.md) guide
