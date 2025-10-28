@@ -475,6 +475,12 @@ function Install-Chocolatey {
             }
         }
 
+        # Track if Chocolatey was newly installed or upgraded
+        $wasNewlyInstalled = $false
+        $wasUpgraded = $false
+        $oldVersion = $null
+        $newVersion = $null
+
         if ($chocoCmd -and $currentVersion) {
             Write-InfoMessage "Chocolatey is installed (version: $currentVersion)"
 
@@ -488,11 +494,21 @@ function Install-Chocolatey {
                     if ($newVersion -ne $currentVersion) {
                         Write-SuccessMessage "Chocolatey upgraded: $currentVersion → $newVersion"
                         Update-SessionEnvironment
+                        $wasUpgraded = $true
+                        $oldVersion = $currentVersion
                     }
                     else {
                         Write-InfoMessage "Chocolatey is already at the latest version"
+                        # Already installed and up-to-date, skip
+                        Add-SkippedTool -Name "Chocolatey" -Version $currentVersion -Reason "Already at latest version"
+                        return
                     }
                 }
+            }
+            else {
+                # Already installed and not checking for upgrades, skip
+                Add-SkippedTool -Name "Chocolatey" -Version $currentVersion -Reason "Already installed"
+                return
             }
         }
         else {
@@ -546,6 +562,7 @@ function Install-Chocolatey {
             if ($chocoCmd) {
                 $chocoVersion = choco --version 2>$null
                 Write-SuccessMessage "Chocolatey installed successfully (version: $chocoVersion)"
+                $wasNewlyInstalled = $true
             }
             else {
                 Write-ErrorLog -Message "Chocolatey installation verification failed" -Fatal
@@ -568,7 +585,7 @@ function Install-Chocolatey {
         # Import Chocolatey profile for Update-SessionEnvironment
         Import-ChocolateyProfile | Out-Null
 
-        # Add Chocolatey to installed tools tracking
+        # Track Chocolatey installation status
         $finalVersionOutput = choco --version 2>&1 | Out-String
         $finalVersionLine = $finalVersionOutput -split "`n" | Where-Object { $_ -match '^\d+\.\d+\.\d+' } | Select-Object -First 1
         $finalVersion = if ($finalVersionLine) { $finalVersionLine.Trim() } else { $currentVersion }
@@ -578,7 +595,14 @@ function Install-Chocolatey {
             $finalVersion = "installed"
         }
 
-        Add-InstalledTool -Name "Chocolatey" -Version $finalVersion
+        # Track based on what action was taken
+        if ($wasNewlyInstalled) {
+            Add-InstalledTool -Name "Chocolatey" -Version $finalVersion
+        }
+        elseif ($wasUpgraded) {
+            Add-UpdatedTool -Name "Chocolatey" -OldVersion $oldVersion -NewVersion $finalVersion
+        }
+        # Note: If already installed/skipped, we already returned early above
 
     }
     catch {
