@@ -717,18 +717,35 @@ function Install-ChocolateyPackage {
         $output = & choco @chocoArgs 2>&1
         $outputString = $output | Out-String
 
-        if ($LASTEXITCODE -eq 0) {
-            Write-SuccessMessage "$ToolName installed successfully"
+        # Chocolatey exit codes:
+        # 0 = Success
+        # 3010 = Success but reboot required
+        # Other non-zero = Failure
+        if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 3010) {
+            # Check if reboot is required
+            $rebootRequired = $LASTEXITCODE -eq 3010 -or $outputString -match "reboot|restart"
+
+            if ($rebootRequired) {
+                Write-WarningMessage "$ToolName installed successfully but REBOOT REQUIRED"
+                Write-ColorOutput "  NOTE: Some components require a system restart to complete installation" -Color Yellow
+            } else {
+                Write-SuccessMessage "$ToolName installed successfully"
+            }
+
             # Get the installed version
             $installedVer = Get-ChocoPackageVersion -PackageName $PackageName
             Add-InstalledTool -Name $ToolName -Version $(if ($installedVer) { $installedVer } else { $chocoVersion })
 
             # Compliance audit logging
             if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
+                $auditDetails = "Chocolatey package installed successfully with checksum verification"
+                if ($rebootRequired) {
+                    $auditDetails += " (reboot required)"
+                }
                 Write-PackageAudit -Action "Install" -PackageName $PackageName `
                     -Version $(if ($installedVer) { $installedVer } else { $chocoVersion }) `
                     -Source "chocolatey" -Status "Success" `
-                    -Details "Chocolatey package installed successfully with checksum verification"
+                    -Details $auditDetails
             }
         }
         else {
@@ -1268,6 +1285,7 @@ function Install-ToolsInParallel {
     $totalTools = $ToolKeys.Count
     $progressCounter = 0
     $lastProgressUpdate = Get-Date
+    $jobTimeout = 900  # 15 minutes timeout per job (some packages like Docker take a long time)
 
     while ($completed -lt $totalTools -and -not $script:CancellationRequested) {
         Start-Sleep -Milliseconds 500
@@ -1281,11 +1299,34 @@ function Install-ToolsInParallel {
 
             Write-InfoMessage "Progress: $completed/$totalTools completed | $runningJobs running | Queue: $($pendingTools.Count) pending"
 
-            # Show which tools are currently running (for troubleshooting)
-            $runningTools = $jobs | Where-Object { -not $_.Processed -and $_.Job.State -eq 'Running' } |
-                ForEach-Object { $_.ToolKey }
-            if ($runningTools.Count -gt 0) {
-                Write-InfoMessage "Currently installing: $($runningTools -join ', ')"
+            # Show which tools are currently running with duration (for troubleshooting)
+            $runningJobsList = $jobs | Where-Object { -not $_.Processed -and $_.Job.State -eq 'Running' }
+            if ($runningJobsList.Count -gt 0) {
+                $now = Get-Date
+                $jobStatus = $runningJobsList | ForEach-Object {
+                    $duration = ($now - $_.StartTime).TotalSeconds
+                    $durationStr = if ($duration -gt 60) {
+                        "{0:N1}m" -f ($duration / 60)
+                    } else {
+                        "{0:N0}s" -f $duration
+                    }
+
+                    # Warn if taking longer than expected
+                    $warning = if ($duration -gt 300) { " (LONG RUNNING)" } else { "" }
+
+                    "$($_.ToolKey) ($durationStr)$warning"
+                }
+                Write-InfoMessage "Currently installing: $($jobStatus -join ', ')"
+
+                # Check for timeout
+                $timedOutJobs = $runningJobsList | Where-Object { ($now - $_.StartTime).TotalSeconds -gt $jobTimeout }
+                if ($timedOutJobs) {
+                    foreach ($timedOut in $timedOutJobs) {
+                        Write-WarningMessage "Job for $($timedOut.ToolKey) has exceeded $($jobTimeout/60) minute timeout"
+                        Write-WarningMessage "  Stopping timed-out job (may be hung or extremely slow package)"
+                        Stop-Job -Job $timedOut.Job -ErrorAction SilentlyContinue
+                    }
+                }
             }
 
             $lastProgressUpdate = Get-Date
