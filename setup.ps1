@@ -45,6 +45,15 @@ param(
     [switch]$LocalDeveloper
 )
 
+# Resolve ConfigPath to absolute path immediately
+if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath $ConfigPath | Resolve-Path -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path
+    if (-not $ConfigPath) {
+        # If Resolve-Path fails (file doesn't exist yet), construct absolute path manually
+        $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath "config\tools-config.json"))
+    }
+}
+
 # Script initialization
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -56,6 +65,27 @@ Import-Module "$modulePath\AdminCheck.psm1" -Force
 Import-Module "$modulePath\ColorConfig.psm1" -Force
 Import-Module "$modulePath\ErrorHandling.psm1" -Force
 Import-Module "$modulePath\SystemCheck.psm1" -Force
+
+# ============================================================================
+# FAIL-FAST: Validate configuration file exists
+# ============================================================================
+
+if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
+    Write-Host ""
+    Write-Host "================================================================" -ForegroundColor Red
+    Write-Host "     CONFIGURATION FILE NOT FOUND" -ForegroundColor Red
+    Write-Host "================================================================" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "ERROR: Configuration file not found:" -ForegroundColor Red
+    Write-Host "  $ConfigPath" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Expected location:" -ForegroundColor White
+    Write-Host "  $PSScriptRoot\config\tools-config.json" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Please ensure the configuration file exists before running this script." -ForegroundColor White
+    Write-Host ""
+    exit 1
+}
 
 # ============================================================================
 # FAIL-FAST: Detect if script should be run with -LocalDeveloper flag

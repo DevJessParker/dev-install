@@ -23,6 +23,15 @@ param(
     [string]$ConfigPath = "$PSScriptRoot\..\config\tools-config.json"
 )
 
+# Resolve ConfigPath to absolute path immediately to avoid context issues in jobs
+if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath $ConfigPath | Resolve-Path -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path
+    if (-not $ConfigPath) {
+        # If Resolve-Path fails (file doesn't exist yet), construct absolute path manually
+        $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath "..\config\tools-config.json"))
+    }
+}
+
 # Script initialization
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -74,6 +83,23 @@ Import-Module (Join-Path -Path $modulePath -ChildPath "ColorConfig.psm1") -Force
 Import-Module (Join-Path -Path $modulePath -ChildPath "ErrorHandling.psm1") -Force
 Import-Module (Join-Path -Path $modulePath -ChildPath "SystemCheck.psm1") -Force
 Import-Module (Join-Path -Path $modulePath -ChildPath "VersionManagement.psm1") -Force
+
+# Early validation: Fail fast if configuration file doesn't exist
+if (-not (Test-Path -Path $ConfigPath -PathType Leaf)) {
+    Write-Host "================================================================" -ForegroundColor Red
+    Write-Host "     CONFIGURATION FILE NOT FOUND" -ForegroundColor Red
+    Write-Host "================================================================" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "ERROR: Configuration file not found:" -ForegroundColor Red
+    Write-Host "  $ConfigPath" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Expected location:" -ForegroundColor White
+    Write-Host "  $PSScriptRoot\..\config\tools-config.json" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Please ensure the configuration file exists before running this script." -ForegroundColor White
+    Write-Host ""
+    exit 1
+}
 
 # Script-level variables (tracking tool installation with versions)
 $script:installedTools = @()

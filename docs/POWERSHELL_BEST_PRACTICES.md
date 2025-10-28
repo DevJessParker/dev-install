@@ -212,6 +212,42 @@ function Add-Tool {
 }
 ```
 
+### 8. Path Resolution in Background Jobs
+
+**Problem:** When scripts are dot-sourced or run in background jobs (Start-Job), `$PSScriptRoot` gets re-evaluated in the new context, breaking relative paths.
+
+```powershell
+# ❌ BAD - Relative path breaks in jobs
+param(
+    [string]$ConfigPath = "$PSScriptRoot\..\config\file.json"
+)
+# If this script is dot-sourced in a job, $PSScriptRoot changes!
+
+# ✅ GOOD - Resolve to absolute path immediately
+param(
+    [string]$ConfigPath = "$PSScriptRoot\..\config\file.json"
+)
+
+# Resolve to absolute path right after parameter block
+if (-not [System.IO.Path]::IsPathRooted($ConfigPath)) {
+    $ConfigPath = Join-Path -Path $PSScriptRoot -ChildPath $ConfigPath |
+        Resolve-Path -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty Path
+    if (-not $ConfigPath) {
+        # Fallback if file doesn't exist yet
+        $ConfigPath = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath "..\config\file.json"))
+    }
+}
+
+# Now $ConfigPath is absolute and safe to pass to jobs
+```
+
+**Why this matters:**
+- Background jobs (Start-Job) run in isolated contexts
+- Dot-sourcing scripts re-evaluates parameter defaults
+- Relative paths become invalid when $PSScriptRoot changes
+- Always resolve paths to absolute before passing to jobs
+
 ## Common Pitfalls to Avoid
 
 1. **Unquoted variable with colon**: `$var:text` → Use `${var}:text`
@@ -220,6 +256,7 @@ function Add-Tool {
 4. **Forgetting -ErrorAction Stop**: Try/catch won't work without it
 5. **Not checking $LASTEXITCODE**: External commands don't throw exceptions
 6. **Using PS 7+ syntax**: Check compatibility with PS 5.1
+7. **Relative paths in background jobs**: Resolve to absolute paths before passing to Start-Job
 
 ## Validation Checklist
 
