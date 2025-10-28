@@ -256,8 +256,21 @@ function Format-ToolTable {
         }
         "Failed" {
             foreach ($tool in $Tools) {
-                Write-ColorOutput "  $($tool.Name)" -Color Red -NoNewline
-                Write-ColorOutput " - $($tool.Reason)" -Color DarkGray
+                Write-ColorOutput "  $($tool.Name)" -Color Red
+                Write-ColorOutput "    Reason: $($tool.Reason)" -Color DarkRed
+
+                # Show additional context for common errors
+                if ($tool.Reason -like "*not found in configuration*") {
+                    Write-ColorOutput "    Action: Check 'installationOrder' array in tools-config.json" -Color Yellow
+                    Write-ColorOutput "    Action: Verify '$($tool.Name)' exists in 'developmentTools' section" -Color Yellow
+                }
+                elseif ($tool.Reason -like "*configuration is null*") {
+                    Write-ColorOutput "    Action: Check that '$($tool.Name)' has valid properties (version, source, etc.)" -Color Yellow
+                }
+                elseif ($tool.Reason -like "*Job execution failed*") {
+                    Write-ColorOutput "    Action: This is a critical error - check PowerShell error output above" -Color Yellow
+                }
+                Write-ColorOutput "" -Color White
             }
         }
     }
@@ -1209,8 +1222,36 @@ function Install-ToolsInParallel {
     $initialBatchCount = [Math]::Min($MaxConcurrency, $pendingTools.Count)
     for ($i = 0; $i -lt $initialBatchCount; $i++) {
         $toolKey = $pendingTools[0]
-        $pendingTools = $pendingTools | Select-Object -Skip 1
+        # CRITICAL: Force array type to prevent string character indexing bug
+        $pendingTools = @($pendingTools | Select-Object -Skip 1)
+
+        # Validate tool exists in configuration
+        if (-not $Tools.ContainsKey($toolKey)) {
+            Write-ErrorMessage "CONFIGURATION ERROR: Tool '$toolKey' is in installation order but not defined in developmentTools configuration"
+            $results.Failed += @{
+                ToolKey = $toolKey
+                Status = "Failed"
+                Message = "Tool not found in configuration (check tools-config.json)"
+            }
+            Add-FailedTool -Name $toolKey -Reason "Tool not found in configuration"
+            $completed++
+            continue
+        }
+
         $tool = $Tools.$toolKey
+
+        # Validate tool configuration is not null
+        if ($null -eq $tool) {
+            Write-ErrorMessage "CONFIGURATION ERROR: Tool '$toolKey' configuration is null or empty"
+            $results.Failed += @{
+                ToolKey = $toolKey
+                Status = "Failed"
+                Message = "Tool configuration is null (check tools-config.json)"
+            }
+            Add-FailedTool -Name $toolKey -Reason "Tool configuration is null"
+            $completed++
+            continue
+        }
 
         $jobInfo = Start-ToolInstallJob -ToolKey $toolKey -Tool $tool -ConfigPath $ConfigPath -ScriptPath $scriptPath
         $jobs += $jobInfo
@@ -1274,7 +1315,11 @@ function Install-ToolsInParallel {
                 elseif ($result.Status -eq "Failed") {
                     $results.Failed += $result
                     Add-FailedTool -Name $result.ToolKey -Reason $result.Message
-                    Write-ErrorMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - Failed"
+                    Write-ErrorMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - FAILED"
+                    Write-ErrorMessage "  Reason: $($result.Message)"
+                    if ($result.Details) {
+                        Write-ColorOutput "  Details: $($result.Details)" -Color DarkRed
+                    }
                 }
                 else {
                     $results.Skipped += $result
@@ -1291,8 +1336,34 @@ function Install-ToolsInParallel {
                 # Start a new job if there are pending tools (maintain concurrency limit)
                 if ($pendingTools.Count -gt 0) {
                     $nextToolKey = $pendingTools[0]
-                    $pendingTools = $pendingTools | Select-Object -Skip 1
+                    # CRITICAL: Force array type to prevent string character indexing bug
+                    $pendingTools = @($pendingTools | Select-Object -Skip 1)
+
+                    # Validate tool exists before starting job
+                    if (-not $Tools.ContainsKey($nextToolKey)) {
+                        Write-ErrorMessage "CONFIGURATION ERROR: Tool '$nextToolKey' is in installation order but not defined in developmentTools configuration"
+                        $results.Failed += @{
+                            ToolKey = $nextToolKey
+                            Status = "Failed"
+                            Message = "Tool not found in configuration. Check that '$nextToolKey' is defined in developmentTools section of tools-config.json"
+                        }
+                        Add-FailedTool -Name $nextToolKey -Reason "Tool not found in configuration"
+                        continue
+                    }
+
                     $nextTool = $Tools.$nextToolKey
+
+                    # Validate tool configuration is not null
+                    if ($null -eq $nextTool) {
+                        Write-ErrorMessage "CONFIGURATION ERROR: Tool '$nextToolKey' configuration is null or empty"
+                        $results.Failed += @{
+                            ToolKey = $nextToolKey
+                            Status = "Failed"
+                            Message = "Tool configuration is null. Check that '$nextToolKey' has valid configuration in tools-config.json"
+                        }
+                        Add-FailedTool -Name $nextToolKey -Reason "Tool configuration is null"
+                        continue
+                    }
 
                     $newJobInfo = Start-ToolInstallJob -ToolKey $nextToolKey -Tool $nextTool -ConfigPath $ConfigPath -ScriptPath $scriptPath
                     $jobs += $newJobInfo
@@ -1303,22 +1374,70 @@ function Install-ToolsInParallel {
                 $jobInfo.Processed = $true
                 $completed++
 
+                # Try to get error details from the job
+                $jobError = $null
+                $jobOutput = $null
+                try {
+                    $jobOutput = Receive-Job -Job $jobInfo.Job -ErrorAction SilentlyContinue -ErrorVariable jobError 2>&1
+                } catch {
+                    $jobError = $_
+                }
+
+                $errorDetails = "PowerShell job execution failed"
+                if ($jobError) {
+                    $errorDetails += ": $($jobError | Out-String)"
+                }
+                elseif ($jobOutput) {
+                    $errorDetails += ". Output: $($jobOutput | Out-String)"
+                }
+
                 $failedResult = @{
                     ToolKey = $jobInfo.ToolKey
                     Status = "Failed"
-                    Message = "Job execution failed"
+                    Message = $errorDetails
                 }
                 $results.Failed += $failedResult
                 Add-FailedTool -Name $jobInfo.ToolKey -Reason "Job execution failed"
 
-                Write-ErrorMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - Job Failed"
+                Write-ErrorMessage "[$completed/$totalTools] $($jobInfo.ToolKey) - JOB EXECUTION FAILED"
+                Write-ErrorMessage "  The PowerShell background job crashed or terminated unexpectedly"
+                Write-ErrorMessage "  Reason: $errorDetails"
+                Write-ColorOutput "  This usually indicates a critical error in the installation logic" -Color DarkRed
+                Write-ColorOutput "  Check the job output above for stack traces or exception details" -Color DarkRed
+
                 Remove-Job -Job $jobInfo.Job -Force
 
                 # Start a new job if there are pending tools (maintain concurrency limit)
                 if ($pendingTools.Count -gt 0) {
                     $nextToolKey = $pendingTools[0]
-                    $pendingTools = $pendingTools | Select-Object -Skip 1
+                    # CRITICAL: Force array type to prevent string character indexing bug
+                    $pendingTools = @($pendingTools | Select-Object -Skip 1)
+
+                    # Validate tool exists before starting job
+                    if (-not $Tools.ContainsKey($nextToolKey)) {
+                        Write-ErrorMessage "CONFIGURATION ERROR: Tool '$nextToolKey' is in installation order but not defined in developmentTools configuration"
+                        $results.Failed += @{
+                            ToolKey = $nextToolKey
+                            Status = "Failed"
+                            Message = "Tool not found in configuration. Check that '$nextToolKey' is defined in developmentTools section of tools-config.json"
+                        }
+                        Add-FailedTool -Name $nextToolKey -Reason "Tool not found in configuration"
+                        continue
+                    }
+
                     $nextTool = $Tools.$nextToolKey
+
+                    # Validate tool configuration is not null
+                    if ($null -eq $nextTool) {
+                        Write-ErrorMessage "CONFIGURATION ERROR: Tool '$nextToolKey' configuration is null or empty"
+                        $results.Failed += @{
+                            ToolKey = $nextToolKey
+                            Status = "Failed"
+                            Message = "Tool configuration is null. Check that '$nextToolKey' has valid configuration in tools-config.json"
+                        }
+                        Add-FailedTool -Name $nextToolKey -Reason "Tool configuration is null"
+                        continue
+                    }
 
                     $newJobInfo = Start-ToolInstallJob -ToolKey $nextToolKey -Tool $nextTool -ConfigPath $ConfigPath -ScriptPath $scriptPath
                     $jobs += $newJobInfo
