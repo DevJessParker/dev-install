@@ -1050,12 +1050,38 @@ function Install-ToolsInParallel {
         }
     }
 
+    # Display initial job status
+    Write-InfoMessage "Started $($jobs.Count) parallel installation jobs"
+    Write-InfoMessage "Job IDs: $($jobs | ForEach-Object { "$($_.ToolKey)=$($_.Job.Id)" } | Join-String -Separator ', ')"
+
     # Wait for all jobs with progress indication
     $completed = 0
     $total = $jobs.Count
+    $progressCounter = 0
+    $lastProgressUpdate = Get-Date
 
     while ($completed -lt $total -and -not $script:CancellationRequested) {
         Start-Sleep -Milliseconds 500
+        $progressCounter++
+
+        # Show progress every 10 seconds (20 iterations * 500ms)
+        if ($progressCounter -ge 20) {
+            $progressCounter = 0
+            $runningJobs = ($jobs | Where-Object { -not $_.Processed -and $_.Job.State -eq 'Running' }).Count
+            $waitingJobs = $total - $completed - $runningJobs
+            $elapsed = ((Get-Date) - $lastProgressUpdate).TotalSeconds
+
+            Write-InfoMessage "Progress: $completed/$total completed | $runningJobs running | $waitingJobs waiting..."
+
+            # Show which tools are currently running (for troubleshooting)
+            $runningTools = $jobs | Where-Object { -not $_.Processed -and $_.Job.State -eq 'Running' } |
+                ForEach-Object { $_.ToolKey }
+            if ($runningTools.Count -gt 0) {
+                Write-InfoMessage "Currently installing: $($runningTools -join ', ')"
+            }
+
+            $lastProgressUpdate = Get-Date
+        }
 
         foreach ($jobInfo in $jobs) {
             if ($jobInfo.Job.State -eq 'Completed' -and -not $jobInfo.Processed) {
@@ -1335,6 +1361,7 @@ function Install-DevelopmentTools {
         # Subsequent waves: Install in parallel
         else {
             Write-InfoMessage "Installing $($currentWave.Count) tools in parallel..."
+            Write-InfoMessage "Tools in this wave: $($currentWave -join ', ')"
 
             $waveResults = Install-ToolsInParallel -ToolKeys $currentWave -Tools $tools -ConfigPath $ConfigPath
 
