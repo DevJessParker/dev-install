@@ -1225,8 +1225,8 @@ function Install-ToolsInParallel {
         # CRITICAL: Force array type to prevent string character indexing bug
         $pendingTools = @($pendingTools | Select-Object -Skip 1)
 
-        # Validate tool exists in configuration
-        if (-not $Tools.ContainsKey($toolKey)) {
+        # Validate tool exists in configuration (PSCustomObject uses PSObject.Properties)
+        if (-not ($Tools.PSObject.Properties.Name -contains $toolKey)) {
             Write-ErrorMessage "CONFIGURATION ERROR: Tool '$toolKey' is in installation order but not defined in developmentTools configuration"
             $results.Failed += @{
                 ToolKey = $toolKey
@@ -1339,8 +1339,8 @@ function Install-ToolsInParallel {
                     # CRITICAL: Force array type to prevent string character indexing bug
                     $pendingTools = @($pendingTools | Select-Object -Skip 1)
 
-                    # Validate tool exists before starting job
-                    if (-not $Tools.ContainsKey($nextToolKey)) {
+                    # Validate tool exists before starting job (PSCustomObject uses PSObject.Properties)
+                    if (-not ($Tools.PSObject.Properties.Name -contains $nextToolKey)) {
                         Write-ErrorMessage "CONFIGURATION ERROR: Tool '$nextToolKey' is in installation order but not defined in developmentTools configuration"
                         $results.Failed += @{
                             ToolKey = $nextToolKey
@@ -1413,8 +1413,8 @@ function Install-ToolsInParallel {
                     # CRITICAL: Force array type to prevent string character indexing bug
                     $pendingTools = @($pendingTools | Select-Object -Skip 1)
 
-                    # Validate tool exists before starting job
-                    if (-not $Tools.ContainsKey($nextToolKey)) {
+                    # Validate tool exists before starting job (PSCustomObject uses PSObject.Properties)
+                    if (-not ($Tools.PSObject.Properties.Name -contains $nextToolKey)) {
                         Write-ErrorMessage "CONFIGURATION ERROR: Tool '$nextToolKey' is in installation order but not defined in developmentTools configuration"
                         $results.Failed += @{
                             ToolKey = $nextToolKey
