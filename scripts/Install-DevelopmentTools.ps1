@@ -532,7 +532,15 @@ function Install-Chocolatey {
         Import-ChocolateyProfile | Out-Null
 
         # Add Chocolatey to installed tools tracking
-        $finalVersion = choco --version 2>$null
+        $finalVersionOutput = choco --version 2>&1 | Out-String
+        $finalVersionLine = $finalVersionOutput -split "`n" | Where-Object { $_ -match '^\d+\.\d+\.\d+' } | Select-Object -First 1
+        $finalVersion = if ($finalVersionLine) { $finalVersionLine.Trim() } else { $currentVersion }
+
+        # Ensure we have a string value
+        if ([string]::IsNullOrEmpty($finalVersion)) {
+            $finalVersion = "installed"
+        }
+
         Add-InstalledTool -Name "Chocolatey" -Version $finalVersion
 
     }
