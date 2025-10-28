@@ -575,7 +575,22 @@ Installs all development tools based on configuration.
 
 ## Troubleshooting
 
+**📖 See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for comprehensive troubleshooting guide**
+
 ### Common Issues
+
+#### Package Not Found Errors
+
+If you see errors like "Package 'nvm' not found" or "Package 'dotnetcore-sdk' not found":
+
+**Solution:**
+1. Verify package names at https://community.chocolatey.org/packages
+2. Update `config/tools-config.json` with correct names
+3. See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for corrected package names
+
+**Updated Package Names (v2.1):**
+- `nvm` → `nvm.portable`
+- `dotnetcore-sdk` → `dotnet-sdk`
 
 #### "Running scripts is disabled on this system"
 
@@ -591,14 +606,21 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 2. Select "Run as Administrator"
 3. Re-run the script
 
-#### Installation Fails for Specific Tool
+#### Checksum Verification Failed
+
+**DO NOT** disable checksum verification (security risk!)
 
 **Solution:**
-1. Check the error message in the Dev Summary
-2. Verify internet connectivity
-3. Try installing that specific tool manually first
-4. Check if the version exists in the package repository
-5. Update the version in `config/tools-config.json`
+1. Check network connection
+2. Check if behind a proxy intercepting HTTPS
+3. Try again later
+4. See [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+
+#### Exit Code 3010 (Reboot Required)
+
+This is actually **SUCCESS** - package installed but needs reboot.
+
+**Solution:** Reboot your machine after installation completes.
 
 #### Environment Variables Not Updated
 
@@ -607,18 +629,11 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 2. Open a new Administrator PowerShell
 3. Verify the installation again
 
-#### Chocolatey Installation Fails
+#### Installation Hangs/Times Out
 
-**Solution:**
-1. Manually install Chocolatey from https://chocolatey.org/install
-2. Re-run the setup script
+Large packages like Docker can take 10+ minutes.
 
-#### Docker Installation Issues
-
-**Solution:**
-1. Ensure Hyper-V is enabled (Windows 10/11 Pro required)
-2. Ensure virtualization is enabled in BIOS
-3. Install Docker Desktop manually if needed
+**Solution:** Script now has 15-minute timeout protection and shows duration
 
 ### Getting Help
 

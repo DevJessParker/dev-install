@@ -29,7 +29,7 @@
     },
     "nvm": {
       "version": "~1.1.5",
-      "packageName": "nvm",
+      "packageName": "nvm.portable",
       "source": "chocolatey",
       "description": "Node Version Manager for Windows"
     },
@@ -48,7 +48,7 @@
     },
     "dotnetcore-sdk": {
       "version": "~3.1.201",
-      "packageName": "dotnetcore-sdk",
+      "packageName": "dotnet-sdk",
       "source": "chocolatey",
       "description": ".NET Core SDK"
     },
