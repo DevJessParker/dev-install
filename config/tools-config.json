@@ -38,7 +38,8 @@
       "source": "nvm",
       "setAsDefault": true,
       "description": "Node.js JavaScript runtime",
-      "dependsOn": ["nvm"]
+      "dependsOn": ["nvm"],
+      "_comment": "CRITICAL: Node.js requires NVM to be installed first. The dependsOn ensures NVM is in a previous wave."
     },
     "yarn": {
       "version": "~1.22.22",
@@ -107,7 +108,8 @@
       "packageName": "AWS.Tools.S3",
       "source": "powershellgallery",
       "description": "AWS S3 Tools for PowerShell",
-      "dependsOn": ["aws.tools.installer"]
+      "dependsOn": ["aws.tools.installer"],
+      "_comment": "Requires AWS.Tools.Installer to be installed first for dependency management"
     },
     "sqlserver": {
       "version": "~21.1.18221",

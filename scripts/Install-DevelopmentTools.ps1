@@ -1065,6 +1065,9 @@ function Install-NodeViaNvm {
     <#
     .SYNOPSIS
         Installs Node.js via NVM and sets it as default
+    .DESCRIPTION
+        Requires NVM (Node Version Manager) to be installed first.
+        Will fail if NVM is not available.
     #>
     [CmdletBinding()]
     param(
@@ -1076,22 +1079,82 @@ function Install-NodeViaNvm {
 
     try {
         # Extract base version (NVM doesn't understand semantic version operators)
-        $nvmVersion = Get-BaseVersionFromExpression -VersionExpression $Version
+        $nvmVersion = Get-BaseVersionFromExpression -VersionExpression $Version -PackageManager "nvm"
 
         Write-InfoMessage "Requesting NVM to install Node.js version: $nvmVersion (from expression: $Version)"
 
-        # Refresh environment to ensure nvm is available
+        # CRITICAL: Ensure NVM is installed before attempting to use it
+        # Refresh environment multiple times to ensure nvm is in PATH
+        Write-InfoMessage "Refreshing environment to detect NVM..."
+
+        # Method 1: Refresh from registry
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
 
-        # Check if NVM is available
-        $nvmCmd = Get-Command nvm -ErrorAction SilentlyContinue
+        # Method 2: Check NVM_HOME and NVM_SYMLINK (set by NVM installer)
+        $nvmHome = [System.Environment]::GetEnvironmentVariable("NVM_HOME", "Machine")
+        $nvmSymlink = [System.Environment]::GetEnvironmentVariable("NVM_SYMLINK", "Machine")
+
+        if ($nvmHome) {
+            Write-InfoMessage "NVM_HOME found: $nvmHome"
+            # Add to PATH if not already there
+            if ($env:Path -notlike "*$nvmHome*") {
+                $env:Path = "$nvmHome;$env:Path"
+            }
+        }
+
+        if ($nvmSymlink) {
+            Write-InfoMessage "NVM_SYMLINK found: $nvmSymlink"
+            if ($env:Path -notlike "*$nvmSymlink*") {
+                $env:Path = "$nvmSymlink;$env:Path"
+            }
+        }
+
+        # Check if NVM is available (with retry)
+        $nvmCmd = $null
+        $maxRetries = 3
+        $retryCount = 0
+
+        while (-not $nvmCmd -and $retryCount -lt $maxRetries) {
+            $nvmCmd = Get-Command nvm -ErrorAction SilentlyContinue
+
+            if (-not $nvmCmd) {
+                $retryCount++
+                if ($retryCount -lt $maxRetries) {
+                    Write-WarningMessage "NVM command not found (attempt $retryCount/$maxRetries). Waiting 2 seconds..."
+                    Start-Sleep -Seconds 2
+                    # Refresh PATH again
+                    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+                }
+            }
+        }
+
         if (-not $nvmCmd) {
-            Write-ErrorLog -Message "NVM is not available. Please ensure NVM is installed first."
-            Write-ColorOutput "NVM Error Details:" -Color Red
-            Write-ColorOutput "  NVM command not found. Ensure NVM for Windows is installed and in PATH." -Color DarkRed
-            Add-FailedTool -Name "Node.js" -Reason "NVM not available"
+            Write-ErrorLog -Message "NVM is not available after $maxRetries attempts. Cannot install Node.js."
+            Write-ColorOutput "" -Color White
+            Write-ColorOutput "NVM Dependency Error:" -Color Red
+            Write-ColorOutput "  Node.js installation requires NVM (Node Version Manager) to be installed first." -Color DarkRed
+            Write-ColorOutput "  NVM command not found in PATH after environment refresh." -Color DarkRed
+            Write-ColorOutput "" -Color White
+            Write-ColorOutput "Troubleshooting:" -Color Yellow
+            Write-ColorOutput "  1. Verify NVM was installed successfully in a previous wave" -Color White
+            Write-ColorOutput "  2. Check if 'nvm' package exists: choco list --local-only nvm" -Color White
+            Write-ColorOutput "  3. Check NVM_HOME environment variable is set" -Color White
+            Write-ColorOutput "  4. If NVM failed to install, Node.js cannot be installed" -Color White
+            Write-ColorOutput "" -Color White
+
+            Add-FailedTool -Name "Node.js" -Reason "NVM not available (dependency not met)"
+
+            # Compliance audit logging
+            if (Get-Command -Name Write-PackageAudit -ErrorAction SilentlyContinue) {
+                Write-PackageAudit -Action "Install" -PackageName "nodejs" `
+                    -Version $nvmVersion -Source "nvm" -Status "Failed" `
+                    -Details "NVM dependency not met - NVM command not available in PATH"
+            }
+
             return
         }
+
+        Write-SuccessMessage "NVM command found: $($nvmCmd.Path)"
 
         # Install Node version and capture output
         Write-InfoMessage "Running: nvm install $nvmVersion"
