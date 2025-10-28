@@ -420,7 +420,23 @@ function Install-Chocolatey {
     try {
         # Check if Chocolatey is installed
         $chocoCmd = Get-Command choco -ErrorAction SilentlyContinue
-        $currentVersion = if ($chocoCmd) { (choco --version 2>$null) } else { $null }
+
+        # Get version, filtering out error messages
+        $currentVersion = $null
+        if ($chocoCmd) {
+            $versionOutput = choco --version 2>&1 | Out-String
+            # Extract only the version number (first line that looks like a version)
+            $versionLine = $versionOutput -split "`n" | Where-Object { $_ -match '^\d+\.\d+\.\d+' } | Select-Object -First 1
+            $currentVersion = $versionLine.Trim()
+
+            # Check if we got errors instead of version
+            if ([string]::IsNullOrEmpty($currentVersion) -or $versionOutput -match 'error|timeout|exception') {
+                Write-WarningLog "Chocolatey command returned errors. It may be locked by another process."
+                Write-InfoMessage "Chocolatey appears to be installed but may be in use. Continuing..."
+                # Set a generic version to indicate it's installed
+                $currentVersion = "installed"
+            }
+        }
 
         if ($chocoCmd -and $currentVersion) {
             Write-InfoMessage "Chocolatey is installed (version: $currentVersion)"
@@ -999,7 +1015,7 @@ function Install-ToolsInParallel {
         }
         elseif ($result.Status -eq "Failed") {
             $results.Failed += $result
-            Add-FailedTool -Name $result.ToolKey -Error $result.Message
+            Add-FailedTool -Name $result.ToolKey -Reason $result.Message
         }
         else {
             $results.Skipped += $result
@@ -1105,7 +1121,7 @@ function Install-ToolsInParallel {
                 }
                 elseif ($result.Status -eq "Failed") {
                     $results.Failed += $result
-                    Add-FailedTool -Name $result.ToolKey -Error $result.Message
+                    Add-FailedTool -Name $result.ToolKey -Reason $result.Message
                     Write-ErrorMessage "[$completed/$total] $($jobInfo.ToolKey) - Failed"
                 }
                 else {
@@ -1130,7 +1146,7 @@ function Install-ToolsInParallel {
                     Message = "Job execution failed"
                 }
                 $results.Failed += $failedResult
-                Add-FailedTool -Name $jobInfo.ToolKey -Error "Job execution failed"
+                Add-FailedTool -Name $jobInfo.ToolKey -Reason "Job execution failed"
 
                 Write-ErrorMessage "[$completed/$total] $($jobInfo.ToolKey) - Job Failed"
                 Remove-Job -Job $jobInfo.Job -Force
