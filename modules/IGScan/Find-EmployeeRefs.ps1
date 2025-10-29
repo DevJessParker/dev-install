@@ -93,6 +93,30 @@ while (-not $mode) {
   }
 }
 
+# Collect user inputs BEFORE scanning files
+$firstInput = $null; $lastInput = $null; $alt = $null
+
+if ($mode -eq 'Name') {
+  $firstInput = Read-Host "Which FIRST name would you like to search for?"
+  $lastInput  = Read-Host "Which LAST name would you like to search for?"
+  if ([string]::IsNullOrWhiteSpace($firstInput) -or [string]::IsNullOrWhiteSpace($lastInput)) {
+    Write-Host "Both first and last names are required for Name mode." -ForegroundColor Red
+    exit 1
+  }
+} elseif ($mode -eq 'String') {
+  $alt = Read-Host "Enter a SINGLE string to search (case-insensitive)"
+  if ([string]::IsNullOrWhiteSpace($alt)) {
+    Write-Host "A non-empty string is required for String mode." -ForegroundColor Red
+    exit 1
+  }
+} else {
+  $alt = Read-Host "Optionally enter an exact key/token string to include (press Enter to skip)"
+}
+
+# NOW enumerate files after we have user input
+Write-Host ""
+Write-Host "Preparing to scan files..." -ForegroundColor Cyan
+
 $maxBytes = [Math]::Max(0, $MaxFileSizeMB) * 1MB
 
 if ([string]::IsNullOrWhiteSpace($Extensions)) {
@@ -144,6 +168,8 @@ if (-not $allFiles -or $allFiles.Count -eq 0) {
   exit 0
 }
 
+Write-Host "Found $($allFiles.Count) files to scan" -ForegroundColor Green
+
 function Invoke-ChunkedSearch([scriptblock]$SearchBlock, [string[]]$Files, [string]$label) {
   $batch = 500
   $total = $Files.Count
@@ -158,25 +184,6 @@ function Invoke-ChunkedSearch([scriptblock]$SearchBlock, [string[]]$Files, [stri
   }
   Write-Progress -Activity $label -Completed
   return $results
-}
-
-$firstInput = $null; $lastInput = $null; $alt = $null
-
-if ($mode -eq 'Name') {
-  $firstInput = Read-Host "Which FIRST name would you like to search for?"
-  $lastInput  = Read-Host "Which LAST name would you like to search for?"
-  if ([string]::IsNullOrWhiteSpace($firstInput) -or [string]::IsNullOrWhiteSpace($lastInput)) {
-    Write-Host "Both first and last names are required for Name mode." -ForegroundColor Red
-    exit 1
-  }
-} elseif ($mode -eq 'String') {
-  $alt = Read-Host "Enter a SINGLE string to search (case-insensitive)"
-  if ([string]::IsNullOrWhiteSpace($alt)) {
-    Write-Host "A non-empty string is required for String mode." -ForegroundColor Red
-    exit 1
-  }
-} else {
-  $alt = Read-Host "Optionally enter an exact key/token string to include (press Enter to skip)"
 }
 
 if ($mode -eq 'String') {
