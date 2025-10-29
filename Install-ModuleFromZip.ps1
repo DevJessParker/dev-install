@@ -50,9 +50,14 @@
 .PARAMETER NoAlias
     Skip interactive alias creation prompt.
 
+.PARAMETER PersistAlias
+    Automatically add the alias to PowerShell profile for persistence across sessions.
+    Default: $true (aliases are automatically persisted)
+    Set to $false to skip profile updates.
+
 .EXAMPLE
     .\Install-ModuleFromZip.ps1 -ModuleName "IGScan"
-    Installs IGScan module by auto-discovering IGScan_Module.zip in Downloads.
+    Installs IGScan module and automatically persists alias to profile.
 
 .EXAMPLE
     .\Install-ModuleFromZip.ps1 -ModuleName "IGScan" -BackupExisting
@@ -65,6 +70,14 @@
 .EXAMPLE
     .\Install-ModuleFromZip.ps1
     Interactive mode: Prompts for module name and discovers ZIP automatically.
+
+.EXAMPLE
+    .\Install-ModuleFromZip.ps1 -ModuleName "IGScan" -PersistAlias $false
+    Installs module and creates alias in current session only (not persisted to profile).
+
+.EXAMPLE
+    .\Install-ModuleFromZip.ps1 -ModuleName "IGScan" -NoAlias
+    Installs module without creating any alias.
 
 .NOTES
     Author: DevJessParker
@@ -124,7 +137,10 @@ param(
     [string]$ZipNamePatternTemplate = '^{0}_Module(?:\s\(\d+\))?(_v?\d+\.\d+\.\d+)?\.zip$',
 
     [Parameter(Mandatory = $false)]
-    [switch]$NoAlias
+    [switch]$NoAlias,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$PersistAlias = $true
 )
 
 #region Script Initialization
@@ -889,6 +905,140 @@ function New-ModuleAlias {
     }
 }
 
+function Add-AliasToProfile {
+    <#
+    .SYNOPSIS
+        Automatically adds or updates alias in PowerShell profile (idempotent).
+
+    .DESCRIPTION
+        Manages alias persistence in PowerShell profile:
+        1. Creates profile file if it doesn't exist
+        2. Detects if alias already exists in profile
+        3. Updates existing alias or adds new one
+        4. Handles errors gracefully (read-only files, permissions, etc.)
+        5. Fully idempotent - safe to run multiple times
+
+    .PARAMETER AliasName
+        Name of the alias to persist.
+
+    .PARAMETER TargetCommand
+        The command the alias should point to.
+
+    .OUTPUTS
+        [bool] $true if profile updated successfully, $false otherwise.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$AliasName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$TargetCommand
+    )
+
+    try {
+        $profilePath = $PROFILE
+
+        # Check if profile exists, create if not
+        if (-not (Test-Path -Path $profilePath -PathType Leaf)) {
+            Write-InfoMessage "PowerShell profile not found. Creating: $profilePath"
+
+            $profileDir = Split-Path -Path $profilePath -Parent
+
+            if (-not (Test-Path -Path $profileDir -PathType Container)) {
+                New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
+            }
+
+            New-Item -Path $profilePath -ItemType File -Force | Out-Null
+            Write-SuccessMessage "Created PowerShell profile"
+        }
+
+        # Read current profile content
+        $profileContent = Get-Content -Path $profilePath -Raw -ErrorAction Stop
+
+        if ($null -eq $profileContent) {
+            $profileContent = ""
+        }
+
+        # Pattern to match existing alias line
+        $aliasPattern = "^\s*Set-Alias\s+(-Name\s+)?['""]?$([regex]::Escape($AliasName))['""]?\s+(-Value\s+)?['""]?.*['""]?\s*$"
+
+        # Check if alias already exists
+        $existingLines = $profileContent -split "`r?`n"
+        $aliasLineIndex = -1
+        $currentAliasLine = $null
+
+        for ($i = 0; $i -lt $existingLines.Count; $i++) {
+            if ($existingLines[$i] -match $aliasPattern) {
+                $aliasLineIndex = $i
+                $currentAliasLine = $existingLines[$i].Trim()
+                break
+            }
+        }
+
+        $newAliasLine = "Set-Alias $AliasName $TargetCommand"
+
+        if ($aliasLineIndex -ge 0) {
+            # Alias exists - check if it needs updating
+            if ($currentAliasLine -match [regex]::Escape($TargetCommand)) {
+                # Idempotent case: alias already correct
+                Write-SuccessMessage "Alias '$AliasName' already exists in profile and points to: $TargetCommand"
+                return $true
+            }
+            else {
+                # Update existing alias
+                Write-InfoMessage "Updating alias '$AliasName' in profile..."
+                $existingLines[$aliasLineIndex] = $newAliasLine
+                $updatedContent = $existingLines -join "`r`n"
+
+                Set-Content -Path $profilePath -Value $updatedContent -Force -ErrorAction Stop
+                Write-SuccessMessage "Updated alias in profile: $AliasName -> $TargetCommand"
+                return $true
+            }
+        }
+        else {
+            # Add new alias to profile
+            Write-InfoMessage "Adding alias '$AliasName' to PowerShell profile..."
+
+            # Add newline if profile doesn't end with one
+            if ($profileContent.Length -gt 0 -and -not ($profileContent -match '[\r\n]$')) {
+                $profileContent += "`r`n"
+            }
+
+            # Add header comment if this is the first IG module alias
+            if ($profileContent -notmatch 'IG Module Aliases') {
+                $profileContent += "`r`n"
+                $profileContent += "# IG Module Aliases (managed by Install-ModuleFromZip.ps1)`r`n"
+            }
+
+            $profileContent += "$newAliasLine`r`n"
+
+            Set-Content -Path $profilePath -Value $profileContent -Force -ErrorAction Stop
+            Write-SuccessMessage "Added alias to profile: $AliasName -> $TargetCommand"
+            return $true
+        }
+    }
+    catch [System.UnauthorizedAccessException] {
+        Write-WarningMessage "Cannot update profile: Access denied"
+        Write-WarningMessage "Profile path: $profilePath"
+        Write-WarningMessage "You may need to run PowerShell as Administrator or check file permissions"
+        return $false
+    }
+    catch [System.IO.IOException] {
+        Write-WarningMessage "Cannot update profile: I/O error - $($_.Exception.Message)"
+        Write-WarningMessage "Profile may be read-only or in use by another process"
+        return $false
+    }
+    catch {
+        Write-WarningMessage "Failed to update PowerShell profile: $($_.Exception.Message)"
+        Write-DebugLog "Error type: $($_.Exception.GetType().FullName)"
+        return $false
+    }
+}
+
 #endregion
 
 #region Main Execution
@@ -1064,13 +1214,52 @@ try {
 
             if ($aliasCreated) {
                 Write-Host ""
-                Write-InfoMessage "The alias '$selectedAlias' is now available in this PowerShell session"
-                Write-Host ""
-                Write-Host "To make it permanent, add this line to your PowerShell profile:" -ForegroundColor Gray
-                Write-Host "  Set-Alias $selectedAlias Start-$normalizedModuleName" -ForegroundColor Yellow
-                Write-Host ""
-                Write-Host "Edit profile: " -ForegroundColor Gray -NoNewline
-                Write-Host "notepad `$PROFILE" -ForegroundColor Yellow
+                Write-SuccessMessage "Alias '$selectedAlias' is now available in this PowerShell session"
+
+                # Automatically persist alias to profile
+                if ($PersistAlias) {
+                    Write-Host ""
+                    Write-Host "Persisting alias to PowerShell profile..." -ForegroundColor Cyan
+
+                    # Determine target function name
+                    $targetCmd = Get-Command -Name "Start-$normalizedModuleName" -ErrorAction SilentlyContinue
+                    if ($null -eq $targetCmd) {
+                        # Fallback to imported module's first function
+                        $mod = Import-Module -Name $normalizedModuleName -PassThru -ErrorAction SilentlyContinue
+                        if ($mod -and $mod.ExportedFunctions -and $mod.ExportedFunctions.Keys.Count -gt 0) {
+                            $targetFunction = $mod.ExportedFunctions.Keys | Select-Object -First 1
+                        }
+                        else {
+                            $targetFunction = "Start-$normalizedModuleName"
+                        }
+                    }
+                    else {
+                        $targetFunction = $targetCmd.Name
+                    }
+
+                    $profileUpdated = Add-AliasToProfile -AliasName $selectedAlias -TargetCommand $targetFunction
+
+                    if ($profileUpdated) {
+                        Write-Host ""
+                        Write-SuccessMessage "Alias persisted! It will be available in all future PowerShell sessions."
+                        Write-InfoMessage "Profile location: $PROFILE"
+                    }
+                    else {
+                        Write-Host ""
+                        Write-WarningMessage "Alias created in current session, but could not update profile automatically"
+                        Write-Host "To persist manually, add this line to your profile:" -ForegroundColor Gray
+                        Write-Host "  Set-Alias $selectedAlias $targetFunction" -ForegroundColor Yellow
+                        Write-Host ""
+                        Write-Host "Edit profile: " -ForegroundColor Gray -NoNewline
+                        Write-Host "notepad `$PROFILE" -ForegroundColor Yellow
+                    }
+                }
+                else {
+                    Write-Host ""
+                    Write-InfoMessage "Alias created in current session only (not persisted to profile)"
+                    Write-Host "To make it permanent, add this line to your PowerShell profile:" -ForegroundColor Gray
+                    Write-Host "  Set-Alias $selectedAlias Start-$normalizedModuleName" -ForegroundColor Yellow
+                }
             }
         }
     }
