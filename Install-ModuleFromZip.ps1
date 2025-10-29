@@ -745,18 +745,67 @@ function Expand-ZipToModule {
     return $destinationPath
 }
 
+function Get-ModuleNameFromFunction {
+    <#
+    .SYNOPSIS
+        Extracts module name from a function name or path.
+
+    .DESCRIPTION
+        Attempts to extract the IG module name from various formats:
+        - Start-IGScan -> IGScan
+        - C:\...\IGScan\Start-IGScan -> IGScan
+        - IGScan\Invoke-Something -> IGScan
+
+    .PARAMETER FunctionName
+        The function name or path to extract module name from.
+
+    .OUTPUTS
+        [string] Extracted module name, or $null if not found.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$FunctionName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FunctionName)) {
+        return $null
+    }
+
+    # Try to extract IG<name> pattern from the function name
+    # Handles: Start-IGScan, Invoke-IGScan, IGScan, etc.
+    if ($FunctionName -match '\b(IG[A-Za-z0-9]+)\b') {
+        return $Matches[1]
+    }
+
+    # Try to extract from path: C:\...\IGScan\...
+    if ($FunctionName -match '\\(IG[A-Za-z0-9]+)\\') {
+        return $Matches[1]
+    }
+
+    return $null
+}
+
 function New-ModuleAlias {
     <#
     .SYNOPSIS
         Creates or updates a global alias for the module's primary function (idempotent).
 
     .DESCRIPTION
-        Idempotent alias creation strategy:
+        Intelligent alias creation with module-aware conflict resolution:
+
+        Strategy:
         1. Prefer "Start-<ModuleName>" function if it exists
-        2. Fallback to first exported function
-        3. If alias exists and points to same module -> refresh/reassign (idempotent)
-        4. If alias exists and points to different command -> prompt for overwrite
-        5. Handle re-installations gracefully
+        2. Fallback to first exported function from module
+        3. Extract module names from existing and new targets for comparison
+
+        Scenarios:
+        - Exact same target: Silently refresh (fully idempotent)
+        - Same module, different function: Auto-update without prompt (module upgrade)
+        - Different module: Prompt user to reassign with clear conflict details
+        - Built-in command conflict: Skip with warning
 
     .PARAMETER AliasName
         Desired alias name (should be lowercase, no digits).
@@ -765,10 +814,14 @@ function New-ModuleAlias {
         Name of the module to create alias for.
 
     .PARAMETER IsReinstall
-        Indicates this is a re-installation (skip some prompts).
+        Indicates this is a re-installation (for context/logging).
 
     .OUTPUTS
         [bool] $true if alias created/updated successfully, $false otherwise.
+
+    .EXAMPLE
+        New-ModuleAlias -AliasName "igscan" -ModuleName "IGScan"
+        Creates or updates the 'igscan' alias, auto-updating if same module.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -822,17 +875,21 @@ function New-ModuleAlias {
         if ($existingCommand.CommandType -eq 'Alias') {
             $existingTarget = $existingCommand.Definition
 
-            # Check if alias points to same module's function
+            # Extract module names for comparison
+            $existingModuleName = Get-ModuleNameFromFunction -FunctionName $existingTarget
+            $newModuleName = Get-ModuleNameFromFunction -FunctionName $targetFunction
+
+            Write-DebugLog "Existing alias target: $existingTarget (Module: $existingModuleName)"
+            Write-DebugLog "New alias target: $targetFunction (Module: $newModuleName)"
+
+            # Scenario 1: Alias points to exact same function (idempotent)
             if ($existingTarget -eq $targetFunction) {
-                # Idempotent case: alias already points to correct target
-                Write-SuccessMessage "Alias '$AliasName' already exists and points to: $targetFunction"
-                Write-InfoMessage "Refreshing alias assignment..."
+                Write-SuccessMessage "Alias '$AliasName' already configured correctly -> $targetFunction"
 
                 try {
                     # Remove and recreate to ensure it's current
                     Remove-Item -Path "Alias:\$AliasName" -Force -ErrorAction SilentlyContinue
                     Set-Alias -Name $AliasName -Value $targetFunction -Scope Global -Option None -ErrorAction Stop
-                    Write-SuccessMessage "Alias refreshed: '$AliasName' -> $targetFunction"
                     return $true
                 }
                 catch {
@@ -840,15 +897,16 @@ function New-ModuleAlias {
                     return $false
                 }
             }
-            elseif ($existingTarget -match "^Start-$ModuleName" -or $existingTarget -match "\\$ModuleName\\") {
-                # Alias points to another function from same module (likely older version)
-                Write-InfoMessage "Alias '$AliasName' currently points to: $existingTarget (from previous installation)"
-                Write-InfoMessage "Updating to new target: $targetFunction"
+            # Scenario 2: Same module (e.g., IGScan -> IGScan) - auto-update without prompt
+            elseif ($null -ne $existingModuleName -and $null -ne $newModuleName -and $existingModuleName -eq $newModuleName) {
+                Write-InfoMessage "Updating '$AliasName' alias for module '$newModuleName'..."
+                Write-InfoMessage "  Previous: $existingTarget"
+                Write-InfoMessage "  New:      $targetFunction"
 
                 try {
                     Remove-Item -Path "Alias:\$AliasName" -Force -ErrorAction SilentlyContinue
                     Set-Alias -Name $AliasName -Value $targetFunction -Scope Global -Option None -ErrorAction Stop
-                    Write-SuccessMessage "Alias updated: '$AliasName' -> $targetFunction"
+                    Write-SuccessMessage "Alias updated for module '$newModuleName'"
                     return $true
                 }
                 catch {
@@ -856,14 +914,36 @@ function New-ModuleAlias {
                     return $false
                 }
             }
+            # Scenario 3: Different modules or commands - prompt user
             else {
-                # Alias points to different module/command - prompt for overwrite
                 Write-Host ""
-                Write-WarningMessage "Alias '$AliasName' already exists and points to a different command:"
-                Write-Host "  Current:  $AliasName -> $existingTarget" -ForegroundColor Yellow
-                Write-Host "  New:      $AliasName -> $targetFunction" -ForegroundColor Green
+                Write-Host "================================================================================" -ForegroundColor Yellow
+                Write-Host "  ALIAS CONFLICT DETECTED" -ForegroundColor Yellow
+                Write-Host "================================================================================" -ForegroundColor Yellow
                 Write-Host ""
-                Write-Host "Overwrite the existing alias? (Y/N): " -ForegroundColor Cyan -NoNewline
+                Write-WarningMessage "The alias '$AliasName' is already assigned to a different command:"
+                Write-Host ""
+
+                if ($null -ne $existingModuleName) {
+                    Write-Host "  Current:  $AliasName -> $existingTarget" -ForegroundColor Yellow
+                    Write-Host "            (Module: $existingModuleName)" -ForegroundColor DarkYellow
+                }
+                else {
+                    Write-Host "  Current:  $AliasName -> $existingTarget" -ForegroundColor Yellow
+                }
+
+                Write-Host ""
+
+                if ($null -ne $newModuleName) {
+                    Write-Host "  New:      $AliasName -> $targetFunction" -ForegroundColor Green
+                    Write-Host "            (Module: $newModuleName)" -ForegroundColor DarkGreen
+                }
+                else {
+                    Write-Host "  New:      $AliasName -> $targetFunction" -ForegroundColor Green
+                }
+
+                Write-Host ""
+                Write-Host "Reassign the alias to the new module? (Y/N): " -ForegroundColor Cyan -NoNewline
 
                 $response = Read-Host
 
@@ -871,23 +951,29 @@ function New-ModuleAlias {
                     try {
                         Remove-Item -Path "Alias:\$AliasName" -Force -ErrorAction Stop
                         Set-Alias -Name $AliasName -Value $targetFunction -Scope Global -Option None -ErrorAction Stop
-                        Write-SuccessMessage "Alias overwritten: '$AliasName' -> $targetFunction"
+                        Write-Host ""
+                        Write-SuccessMessage "Alias reassigned: '$AliasName' -> $targetFunction"
                         return $true
                     }
                     catch {
-                        Write-WarningMessage "Failed to overwrite alias: $($_.Exception.Message)"
+                        Write-Host ""
+                        Write-WarningMessage "Failed to reassign alias: $($_.Exception.Message)"
                         return $false
                     }
                 }
                 else {
+                    Write-Host ""
                     Write-InfoMessage "Kept existing alias: '$AliasName' -> $existingTarget"
+                    Write-InfoMessage "You can manually change it later using: Set-Alias $AliasName $targetFunction"
                     return $false
                 }
             }
         }
         else {
             # Not an alias - it's a built-in command, function, or cmdlet
-            Write-WarningMessage "Cannot create alias '$AliasName' - name conflicts with existing $($existingCommand.CommandType): $($existingCommand.Name)"
+            Write-Host ""
+            Write-WarningMessage "Cannot create alias '$AliasName' - name conflicts with existing $($existingCommand.CommandType)"
+            Write-WarningMessage "Command: $($existingCommand.Name)"
             Write-WarningMessage "Skipping alias creation to avoid breaking existing functionality"
             return $false
         }
