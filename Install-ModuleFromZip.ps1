@@ -732,13 +732,15 @@ function Expand-ZipToModule {
 function New-ModuleAlias {
     <#
     .SYNOPSIS
-        Creates a global alias for the module's primary function.
+        Creates or updates a global alias for the module's primary function (idempotent).
 
     .DESCRIPTION
-        Alias creation strategy:
+        Idempotent alias creation strategy:
         1. Prefer "Start-<ModuleName>" function if it exists
         2. Fallback to first exported function
-        3. Check for naming conflicts before creating
+        3. If alias exists and points to same module -> refresh/reassign (idempotent)
+        4. If alias exists and points to different command -> prompt for overwrite
+        5. Handle re-installations gracefully
 
     .PARAMETER AliasName
         Desired alias name (should be lowercase, no digits).
@@ -746,8 +748,11 @@ function New-ModuleAlias {
     .PARAMETER ModuleName
         Name of the module to create alias for.
 
+    .PARAMETER IsReinstall
+        Indicates this is a re-installation (skip some prompts).
+
     .OUTPUTS
-        [bool] $true if alias created successfully, $false otherwise.
+        [bool] $true if alias created/updated successfully, $false otherwise.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -758,17 +763,11 @@ function New-ModuleAlias {
 
         [Parameter(Mandatory = $true)]
         [ValidateNotNullOrEmpty()]
-        [string]$ModuleName
+        [string]$ModuleName,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IsReinstall
     )
-
-    # Check for existing command with same name
-    $existingCommand = Get-Command -Name $AliasName -ErrorAction SilentlyContinue
-
-    if ($null -ne $existingCommand) {
-        Write-WarningMessage "Alias '$AliasName' conflicts with existing $($existingCommand.CommandType): $($existingCommand.Name)"
-        Write-WarningMessage "Skipping alias creation to avoid conflict"
-        return $false
-    }
 
     # Determine target function
     $targetFunction = "Start-$ModuleName"
@@ -795,8 +794,90 @@ function New-ModuleAlias {
             return $false
         }
     }
+    else {
+        $targetFunction = $targetCommand.Name
+    }
 
-    # Create alias
+    # Check for existing command with same name
+    $existingCommand = Get-Command -Name $AliasName -ErrorAction SilentlyContinue
+
+    if ($null -ne $existingCommand) {
+        # Handle different scenarios based on what exists
+        if ($existingCommand.CommandType -eq 'Alias') {
+            $existingTarget = $existingCommand.Definition
+
+            # Check if alias points to same module's function
+            if ($existingTarget -eq $targetFunction) {
+                # Idempotent case: alias already points to correct target
+                Write-SuccessMessage "Alias '$AliasName' already exists and points to: $targetFunction"
+                Write-InfoMessage "Refreshing alias assignment..."
+
+                try {
+                    # Remove and recreate to ensure it's current
+                    Remove-Item -Path "Alias:\$AliasName" -Force -ErrorAction SilentlyContinue
+                    Set-Alias -Name $AliasName -Value $targetFunction -Scope Global -Option None -ErrorAction Stop
+                    Write-SuccessMessage "Alias refreshed: '$AliasName' -> $targetFunction"
+                    return $true
+                }
+                catch {
+                    Write-WarningMessage "Failed to refresh alias: $($_.Exception.Message)"
+                    return $false
+                }
+            }
+            elseif ($existingTarget -match "^Start-$ModuleName" -or $existingTarget -match "\\$ModuleName\\") {
+                # Alias points to another function from same module (likely older version)
+                Write-InfoMessage "Alias '$AliasName' currently points to: $existingTarget (from previous installation)"
+                Write-InfoMessage "Updating to new target: $targetFunction"
+
+                try {
+                    Remove-Item -Path "Alias:\$AliasName" -Force -ErrorAction SilentlyContinue
+                    Set-Alias -Name $AliasName -Value $targetFunction -Scope Global -Option None -ErrorAction Stop
+                    Write-SuccessMessage "Alias updated: '$AliasName' -> $targetFunction"
+                    return $true
+                }
+                catch {
+                    Write-WarningMessage "Failed to update alias: $($_.Exception.Message)"
+                    return $false
+                }
+            }
+            else {
+                # Alias points to different module/command - prompt for overwrite
+                Write-Host ""
+                Write-WarningMessage "Alias '$AliasName' already exists and points to a different command:"
+                Write-Host "  Current:  $AliasName -> $existingTarget" -ForegroundColor Yellow
+                Write-Host "  New:      $AliasName -> $targetFunction" -ForegroundColor Green
+                Write-Host ""
+                Write-Host "Overwrite the existing alias? (Y/N): " -ForegroundColor Cyan -NoNewline
+
+                $response = Read-Host
+
+                if ($response -match '^[Yy]') {
+                    try {
+                        Remove-Item -Path "Alias:\$AliasName" -Force -ErrorAction Stop
+                        Set-Alias -Name $AliasName -Value $targetFunction -Scope Global -Option None -ErrorAction Stop
+                        Write-SuccessMessage "Alias overwritten: '$AliasName' -> $targetFunction"
+                        return $true
+                    }
+                    catch {
+                        Write-WarningMessage "Failed to overwrite alias: $($_.Exception.Message)"
+                        return $false
+                    }
+                }
+                else {
+                    Write-InfoMessage "Kept existing alias: '$AliasName' -> $existingTarget"
+                    return $false
+                }
+            }
+        }
+        else {
+            # Not an alias - it's a built-in command, function, or cmdlet
+            Write-WarningMessage "Cannot create alias '$AliasName' - name conflicts with existing $($existingCommand.CommandType): $($existingCommand.Name)"
+            Write-WarningMessage "Skipping alias creation to avoid breaking existing functionality"
+            return $false
+        }
+    }
+
+    # No existing command - create new alias
     try {
         Set-Alias -Name $AliasName -Value $targetFunction -Scope Global -Option None -ErrorAction Stop
         Write-SuccessMessage "Created alias: '$AliasName' -> $targetFunction"
@@ -976,7 +1057,10 @@ try {
         }
 
         if ($null -ne $selectedAlias) {
-            $aliasCreated = New-ModuleAlias -AliasName $selectedAlias -ModuleName $normalizedModuleName
+            # Detect if this is a re-installation
+            $isReinstallation = ($null -ne $installedVersion)
+
+            $aliasCreated = New-ModuleAlias -AliasName $selectedAlias -ModuleName $normalizedModuleName -IsReinstall:$isReinstallation
 
             if ($aliasCreated) {
                 Write-Host ""
