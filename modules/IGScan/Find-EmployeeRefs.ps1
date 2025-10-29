@@ -169,29 +169,66 @@ $skipDirsPattern = '\\(' + (
   ) -join '|'
 ) + ')(\\|$)'
 
-Write-Progress -Activity "Enumerating files" -Status "Scanning directories..." -PercentComplete 0
-$allCandidates = Get-ChildItem -Path $RootPath -Recurse -File -Force -ErrorAction SilentlyContinue
-$total = ($allCandidates | Measure-Object).Count
-$idx = 0
-$allFiles = @()
+# Custom recursive file enumeration that SKIPS excluded directories
+# This is MUCH faster than Get-ChildItem -Recurse because we never enter
+# directories like node_modules, .git, etc.
+function Get-FilteredFilesRecursive {
+  param(
+    [string]$Path,
+    [hashtable]$ExtHash,
+    [long]$MaxBytes,
+    [string]$SkipPattern
+  )
 
-foreach ($f in $allCandidates) {
-  $idx++
-  if ($idx % 500 -eq 0 -or $idx -eq $total) {
-    $pct = [int]([double]$idx / [Math]::Max(1,$total) * 100)
-    Write-Progress -Activity "Enumerating files" -Status "Processed $idx of $total" -PercentComplete $pct
+  $files = @()
+  $script:fileCount = 0
+
+  function Traverse-Directory {
+    param([string]$dir)
+
+    try {
+      # Get directories first and filter them BEFORE recursing
+      $dirs = Get-ChildItem -Path $dir -Directory -Force -ErrorAction SilentlyContinue
+      foreach ($d in $dirs) {
+        # Skip if directory matches exclusion pattern
+        if ($d.FullName -match $SkipPattern) {
+          continue
+        }
+        # Recurse into this directory
+        Traverse-Directory $d.FullName
+      }
+
+      # Now get files in current directory
+      $currentFiles = Get-ChildItem -Path $dir -File -Force -ErrorAction SilentlyContinue
+      foreach ($f in $currentFiles) {
+        $script:fileCount++
+        if ($script:fileCount % 1000 -eq 0) {
+          Write-Progress -Activity "Enumerating files" -Status "Found $script:fileCount files..." -PercentComplete -1
+        }
+
+        # Skip files that are too large
+        if ($f.Length -gt $MaxBytes) { continue }
+
+        # Skip files without matching extensions
+        $ext = [System.IO.Path]::GetExtension($f.Name)
+        if ([string]::IsNullOrEmpty($ext)) { continue }
+        if (-not $ExtHash.ContainsKey($ext.ToLower())) { continue }
+
+        $files += $f.FullName
+      }
+    }
+    catch {
+      # Silently skip directories we can't access
+    }
   }
 
-  if ($f.FullName -match $skipDirsPattern) { continue }
-  if ($f.Length -gt $maxBytes) { continue }
-
-  $ext = [System.IO.Path]::GetExtension($f.Name)
-  if ([string]::IsNullOrEmpty($ext)) { continue }
-  if (-not $extHash.ContainsKey($ext.ToLower())) { continue }
-
-  $allFiles += $f.FullName
+  Traverse-Directory $Path
+  Write-Progress -Activity "Enumerating files" -Completed
+  return $files
 }
-Write-Progress -Activity "Enumerating files" -Completed
+
+Write-Progress -Activity "Enumerating files" -Status "Starting scan..." -PercentComplete 0
+$allFiles = Get-FilteredFilesRecursive -Path $RootPath -ExtHash $extHash -MaxBytes $maxBytes -SkipPattern $skipDirsPattern
 
 if (-not $allFiles -or $allFiles.Count -eq 0) {
   Write-Host "No candidate files found to scan under $RootPath (after exclusions, size limit, and extension filter)." -ForegroundColor Yellow
