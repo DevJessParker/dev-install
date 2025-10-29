@@ -125,17 +125,47 @@ if ([string]::IsNullOrWhiteSpace($Extensions)) {
 $extArray = $Extensions.Split(',', [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() }
 $extHash = @{}; foreach ($e in $extArray) { $extHash[$e.ToLower()] = $true }
 
+# Build comprehensive skip pattern for performance
+# Note: Files are filtered after enumeration, but this prevents processing
+# files from package/build directories
 $skipDirsPattern = '\\(' + (
   @(
-    'node_modules','\.git','\.github','\.gitlab','\.svn','\.hg',
-    '\.idea','\.vscode','\.vs',
-    'bin','obj','dist','build','out','coverage','target',
-    'vendor','bower_components','lib','deps',
-    'logs','tmp','temp',
-    '\.next','\.nuxt','\.angular',
-    '\.cache','\.terraform',
-    '\.venv','venv','\.tox',
-    'site-packages','packages'
+    # Package managers and dependencies
+    'node_modules','bower_components','jspm_packages','web_modules',
+    'vendor','vendors','third_party','3rdparty','packages',
+    'site-packages','dist-packages','__pypackages__',
+    'lib','libs','deps','dependencies',
+
+    # Version control
+    '\.git','\.github','\.gitlab','\.svn','\.hg','\.bzr',
+
+    # IDE and editors
+    '\.idea','\.vscode','\.vs','\.settings','\.eclipse',
+    '\.metadata','\.project','\.classpath',
+
+    # Build outputs
+    'bin','obj','dist','build','builds','out','output','target',
+    'release','debug','\.build','_build',
+
+    # Framework specific
+    '\.next','\.nuxt','\.angular','\.svelte-kit','\.docusaurus',
+    '\.cache','\.parcel-cache','\.webpack','\.rollup\.cache',
+    '\.turbo','\.vercel','\.netlify',
+
+    # Python
+    '\.venv','venv','\.tox','\.pytest_cache','__pycache__','\.mypy_cache',
+    '\.eggs','\.egg-info','\.Python',
+
+    # Infrastructure as Code
+    '\.terraform','\.terragrunt-cache','\.pulumi',
+
+    # Logs and temp
+    'logs','log','tmp','temp','temps','\.tmp','\.temp',
+    'coverage','\.coverage','\.nyc_output',
+
+    # OS specific
+    '\$RECYCLE\.BIN','System Volume Information','\.Trash',
+    '\.DS_Store','\.localized'
   ) -join '|'
 ) + ')(\\|$)'
 
