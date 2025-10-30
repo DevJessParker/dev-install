@@ -12,7 +12,9 @@ function Invoke-EmployeeRefScan {
         [string]$RootPath,
         [int]$MaxFileSizeMB = 5,
         [string]$Extensions,
-        [switch]$IncludeLineNumbers
+        [switch]$IncludeLineNumbers,
+        [switch]$SkipPerformanceCheck,
+        [switch]$AddDefenderExclusion
     )
 
     # Execute the script with parameters

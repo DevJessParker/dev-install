@@ -36,7 +36,9 @@ param(
     [string]$RootPath,
     [int]$MaxFileSizeMB = 5,
     [string]$Extensions,
-    [switch]$IncludeLineNumbers
+    [switch]$IncludeLineNumbers,
+    [switch]$SkipPerformanceCheck,
+    [switch]$AddDefenderExclusion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -67,6 +69,74 @@ function Get-ExcludedDirectoriesPattern {
         'logs', 'tmp', 'temp'
     )
     return '\\(' + ($excludedDirs -join '|') + ')(\\|$)'
+}
+
+function Test-DriveType {
+    param([string]$Path)
+
+    try {
+        # Get the drive letter
+        $driveLetter = Split-Path -Qualifier $Path
+        if (-not $driveLetter) { return $null }
+
+        # Get physical disk info
+        $partition = Get-Partition | Where-Object { $_.DriveLetter -eq $driveLetter.TrimEnd(':') } | Select-Object -First 1
+        if (-not $partition) { return $null }
+
+        $disk = Get-PhysicalDisk | Where-Object { $_.DeviceId -eq $partition.DiskNumber } | Select-Object -First 1
+        if (-not $disk) { return $null }
+
+        return $disk.MediaType
+    }
+    catch {
+        return $null
+    }
+}
+
+function Test-DefenderExclusion {
+    param([string]$Path)
+
+    try {
+        $exclusions = Get-MpPreference -ErrorAction SilentlyContinue | Select-Object -ExpandProperty ExclusionPath
+        if (-not $exclusions) { return $false }
+
+        # Check if path or parent is excluded
+        foreach ($exclusion in $exclusions) {
+            if ($Path -like "$exclusion*") {
+                return $true
+            }
+        }
+        return $false
+    }
+    catch {
+        return $false
+    }
+}
+
+function Add-DefenderExclusionSafe {
+    param([string]$Path)
+
+    # Check if running as admin
+    $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    if (-not $isAdmin) {
+        Write-Host ""
+        Write-Host "WARNING: Administrator privileges required to add Windows Defender exclusion" -ForegroundColor Yellow
+        Write-Host "Please run this command as Administrator:" -ForegroundColor Yellow
+        Write-Host "  Add-MpPreference -ExclusionPath '$Path'" -ForegroundColor Cyan
+        Write-Host ""
+        return $false
+    }
+
+    try {
+        Add-MpPreference -ExclusionPath $Path -ErrorAction Stop
+        Write-Host "✓ Added Windows Defender exclusion for: $Path" -ForegroundColor Green
+        return $true
+    }
+    catch {
+        Write-Host "✗ Failed to add Windows Defender exclusion: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
 }
 
 function Get-TargetFiles {
@@ -151,6 +221,56 @@ if ([string]::IsNullOrWhiteSpace($RootPath)) {
 if (-not (Test-Path $RootPath)) {
     Write-Host "ERROR: Path not found: $RootPath" -ForegroundColor Red
     exit 1
+}
+
+#endregion
+
+#region Performance Optimization Check
+
+if (-not $SkipPerformanceCheck) {
+    Write-Host ""
+    Write-Host "Checking performance optimizations..." -ForegroundColor Cyan
+
+    # Check 1: Drive Type (SSD vs HDD)
+    $driveType = Test-DriveType $RootPath
+    if ($driveType) {
+        if ($driveType -eq 'SSD') {
+            Write-Host "✓ Drive type: SSD (optimal)" -ForegroundColor Green
+        }
+        elseif ($driveType -eq 'HDD') {
+            Write-Host "⚠ Drive type: HDD (slower)" -ForegroundColor Yellow
+            Write-Host "  TIP: Moving repo to SSD can give 2-5x speedup" -ForegroundColor Gray
+        }
+        else {
+            Write-Host "? Drive type: $driveType" -ForegroundColor Gray
+        }
+    }
+
+    # Check 2: Windows Defender Exclusion
+    $isExcluded = Test-DefenderExclusion $RootPath
+    if ($isExcluded) {
+        Write-Host "✓ Windows Defender: Path is excluded (optimal)" -ForegroundColor Green
+    }
+    else {
+        Write-Host "⚠ Windows Defender: Scanning files (2-5x slower!)" -ForegroundColor Yellow
+
+        if ($AddDefenderExclusion) {
+            Write-Host "  Attempting to add exclusion..." -ForegroundColor Gray
+            $added = Add-DefenderExclusionSafe $RootPath
+            if (-not $added) {
+                Write-Host "  Run as Administrator with -AddDefenderExclusion flag to add exclusion" -ForegroundColor Gray
+            }
+        }
+        else {
+            Write-Host "  TIP: Add exclusion for 2-5x speedup:" -ForegroundColor Gray
+            Write-Host "    1. Run PowerShell as Administrator" -ForegroundColor Gray
+            Write-Host "    2. Run: igscan -AddDefenderExclusion" -ForegroundColor Gray
+            Write-Host "  OR manually:" -ForegroundColor Gray
+            Write-Host "    Add-MpPreference -ExclusionPath '$RootPath'" -ForegroundColor Cyan
+        }
+    }
+
+    Write-Host ""
 }
 
 #endregion
