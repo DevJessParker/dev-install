@@ -35,7 +35,8 @@
 param(
     [string]$RootPath,
     [int]$MaxFileSizeMB = 5,
-    [string]$Extensions
+    [string]$Extensions,
+    [switch]$IncludeLineNumbers
 )
 
 $ErrorActionPreference = 'Stop'
@@ -450,9 +451,9 @@ $runspacePool.Open()
 
 # Scriptblock for parallel execution
 $scanScriptBlock = {
-    param($File, $SearchPatterns, $Mode, $SearchString, $Results, $PatternCounts)
+    param($File, $SearchPatterns, $Mode, $SearchString, $Results, $PatternCounts, $IncludeLineNumbers)
 
-    # Helper to detect if a line is commented
+    # Helper to detect if a line is commented (only used if line numbers enabled)
     function Is-CommentedLine {
         param([string]$line)
         $trimmed = $line.TrimStart()
@@ -464,74 +465,39 @@ $scanScriptBlock = {
         $content = [System.IO.File]::ReadAllText($File)
         if ([string]::IsNullOrEmpty($content)) { return }
 
-        # Build line start position map ONCE (much faster than counting newlines repeatedly)
-        $lineStarts = [System.Collections.Generic.List[int]]::new()
-        $lineStarts.Add(0)
-        for ($i = 0; $i -lt $content.Length; $i++) {
-            if ($content[$i] -eq "`n") {
-                $lineStarts.Add($i + 1)
-            }
-        }
-
-        # Also get line texts for comment detection
-        $lines = $content -split "`n"
-
-        # Fast line number lookup function (binary search would be even faster, but this is good enough)
-        $getLineNumber = {
-            param([int]$charPos)
-            for ($idx = $lineStarts.Count - 1; $idx -ge 0; $idx--) {
-                if ($charPos -ge $lineStarts[$idx]) {
-                    return $idx + 1
+        # Only do expensive line number tracking if requested
+        if ($IncludeLineNumbers) {
+            # Build line start position map ONCE (much faster than counting newlines repeatedly)
+            $lineStarts = [System.Collections.Generic.List[int]]::new()
+            $lineStarts.Add(0)
+            for ($i = 0; $i -lt $content.Length; $i++) {
+                if ($content[$i] -eq "`n") {
+                    $lineStarts.Add($i + 1)
                 }
             }
-            return 1
+
+            # Also get line texts for comment detection
+            $lines = $content -split "`n"
+
+            # Fast line number lookup function
+            $getLineNumber = {
+                param([int]$charPos)
+                for ($idx = $lineStarts.Count - 1; $idx -ge 0; $idx--) {
+                    if ($charPos -ge $lineStarts[$idx]) {
+                        return $idx + 1
+                    }
+                }
+                return 1
+            }
         }
 
         if ($Mode -eq 'String') {
-            $matchedLines = [System.Collections.Generic.HashSet[int]]::new()
-            $commentedLines = [System.Collections.Generic.HashSet[int]]::new()
-
             $pattern = [regex]::new([regex]::Escape($SearchString), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             $matches = $pattern.Matches($content)
 
-            foreach ($match in $matches) {
-                $lineNum = & $getLineNumber $match.Index
-                [void]$matchedLines.Add($lineNum)
-                # Check if this line is commented
-                if (Is-CommentedLine $lines[$lineNum - 1]) {
-                    [void]$commentedLines.Add($lineNum)
-                }
-            }
-
-            if ($matchedLines.Count -gt 0) {
-                $activeLines = [System.Collections.Generic.HashSet[int]]::new($matchedLines)
-                $activeLines.ExceptWith($commentedLines)
-
-                if ($activeLines.Count -gt 0) {
-                    $Results['StringMatch'].Add([PSCustomObject]@{
-                        File = $File
-                        Lines = ($activeLines | Sort-Object)
-                        IsCommented = $false
-                    })
-                    $null = $PatternCounts.AddOrUpdate('StringMatch', 1, { param($k, $v) $v + 1 })
-                }
-
-                if ($commentedLines.Count -gt 0) {
-                    $Results['StringMatch_Commented'].Add([PSCustomObject]@{
-                        File = $File
-                        Lines = ($commentedLines | Sort-Object)
-                        IsCommented = $true
-                    })
-                }
-            }
-        }
-        else {
-            # Check all patterns
-            foreach ($key in $SearchPatterns.Keys) {
-                $pattern = $SearchPatterns[$key].Pattern
-                $matches = $pattern.Matches($content)
-
-                if ($matches.Count -gt 0) {
+            if ($matches.Count -gt 0) {
+                if ($IncludeLineNumbers) {
+                    # Detailed mode with line numbers and comment detection
                     $matchedLines = [System.Collections.Generic.HashSet[int]]::new()
                     $commentedLines = [System.Collections.Generic.HashSet[int]]::new()
 
@@ -544,29 +510,83 @@ $scanScriptBlock = {
                         }
                     }
 
-                    # Separate active matches from commented matches
                     $activeLines = [System.Collections.Generic.HashSet[int]]::new($matchedLines)
                     $activeLines.ExceptWith($commentedLines)
 
                     if ($activeLines.Count -gt 0) {
-                        $Results[$key].Add([PSCustomObject]@{
+                        $Results['StringMatch'].Add([PSCustomObject]@{
                             File = $File
                             Lines = ($activeLines | Sort-Object)
-                            IsCommented = $false
                         })
-                        $null = $PatternCounts.AddOrUpdate($key, 1, { param($k, $v) $v + 1 })
+                        $null = $PatternCounts.AddOrUpdate('StringMatch', 1, { param($k, $v) $v + 1 })
                     }
 
                     if ($commentedLines.Count -gt 0) {
-                        $commentedKey = "${key}_Commented"
-                        if (-not $Results.ContainsKey($commentedKey)) {
-                            [void]$Results.TryAdd($commentedKey, [System.Collections.Concurrent.ConcurrentBag[object]]::new())
-                        }
-                        $Results[$commentedKey].Add([PSCustomObject]@{
+                        $Results['StringMatch_Commented'].Add([PSCustomObject]@{
                             File = $File
                             Lines = ($commentedLines | Sort-Object)
-                            IsCommented = $true
                         })
+                    }
+                } else {
+                    # Fast mode - just record file has matches
+                    $Results['StringMatch'].Add([PSCustomObject]@{
+                        File = $File
+                        Lines = @()  # Empty array when line numbers disabled
+                    })
+                    $null = $PatternCounts.AddOrUpdate('StringMatch', 1, { param($k, $v) $v + 1 })
+                }
+            }
+        }
+        else {
+            # Check all patterns (Name or Keys mode)
+            foreach ($key in $SearchPatterns.Keys) {
+                $pattern = $SearchPatterns[$key].Pattern
+                $matches = $pattern.Matches($content)
+
+                if ($matches.Count -gt 0) {
+                    if ($IncludeLineNumbers) {
+                        # Detailed mode with line numbers and comment detection
+                        $matchedLines = [System.Collections.Generic.HashSet[int]]::new()
+                        $commentedLines = [System.Collections.Generic.HashSet[int]]::new()
+
+                        foreach ($match in $matches) {
+                            $lineNum = & $getLineNumber $match.Index
+                            [void]$matchedLines.Add($lineNum)
+                            # Check if this line is commented
+                            if (Is-CommentedLine $lines[$lineNum - 1]) {
+                                [void]$commentedLines.Add($lineNum)
+                            }
+                        }
+
+                        # Separate active matches from commented matches
+                        $activeLines = [System.Collections.Generic.HashSet[int]]::new($matchedLines)
+                        $activeLines.ExceptWith($commentedLines)
+
+                        if ($activeLines.Count -gt 0) {
+                            $Results[$key].Add([PSCustomObject]@{
+                                File = $File
+                                Lines = ($activeLines | Sort-Object)
+                            })
+                            $null = $PatternCounts.AddOrUpdate($key, 1, { param($k, $v) $v + 1 })
+                        }
+
+                        if ($commentedLines.Count -gt 0) {
+                            $commentedKey = "${key}_Commented"
+                            if (-not $Results.ContainsKey($commentedKey)) {
+                                [void]$Results.TryAdd($commentedKey, [System.Collections.Concurrent.ConcurrentBag[object]]::new())
+                            }
+                            $Results[$commentedKey].Add([PSCustomObject]@{
+                                File = $File
+                                Lines = ($commentedLines | Sort-Object)
+                            })
+                        }
+                    } else {
+                        # Fast mode - just record file has matches
+                        $Results[$key].Add([PSCustomObject]@{
+                            File = $File
+                            Lines = @()  # Empty array when line numbers disabled
+                        })
+                        $null = $PatternCounts.AddOrUpdate($key, 1, { param($k, $v) $v + 1 })
                     }
                 }
             }
@@ -582,7 +602,7 @@ $runspaces = [System.Collections.ArrayList]::new()
 $startTime = Get-Date
 
 foreach ($file in $targetFiles) {
-    $powershell = [powershell]::Create().AddScript($scanScriptBlock).AddArgument($file).AddArgument($searchPatterns).AddArgument($mode).AddArgument($searchString).AddArgument($results).AddArgument($patternCounts)
+    $powershell = [powershell]::Create().AddScript($scanScriptBlock).AddArgument($file).AddArgument($searchPatterns).AddArgument($mode).AddArgument($searchString).AddArgument($results).AddArgument($patternCounts).AddArgument($IncludeLineNumbers.IsPresent)
     $powershell.RunspacePool = $runspacePool
 
     [void]$runspaces.Add([PSCustomObject]@{
@@ -676,27 +696,31 @@ if ($mode -eq 'String') {
     Write-SectionHeader "String Match: `"$searchString`"" 'Yellow'
     if ($results.ContainsKey('StringMatch') -and @($results['StringMatch']).Count -gt 0) {
         $results['StringMatch'] | ForEach-Object {
-            $lineNumbers = $_.Lines -join ', '
             Write-Host "  $($_.File)" -ForegroundColor White
-            Write-Host "    Lines: $lineNumbers" -ForegroundColor Gray
+            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "    Lines: $lineNumbers" -ForegroundColor Gray
+            }
         }
     }
     else {
         Write-Host "  No matches found" -ForegroundColor Gray
     }
 
-    # Commented out references
-    Write-SectionHeader "COMMENTED OUT REFERENCE" 'DarkYellow'
-    if ($results.ContainsKey('StringMatch_Commented') -and @($results['StringMatch_Commented']).Count -gt 0) {
-        Write-Host "  String: `"$searchString`" (in comments)" -ForegroundColor DarkYellow
-        $results['StringMatch_Commented'] | ForEach-Object {
-            $lineNumbers = $_.Lines -join ', '
-            Write-Host "    $($_.File)" -ForegroundColor White
-            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+    # Commented out references (only shown if line numbers enabled)
+    if ($IncludeLineNumbers) {
+        Write-SectionHeader "COMMENTED OUT REFERENCE" 'DarkYellow'
+        if ($results.ContainsKey('StringMatch_Commented') -and @($results['StringMatch_Commented']).Count -gt 0) {
+            Write-Host "  String: `"$searchString`" (in comments)" -ForegroundColor DarkYellow
+            $results['StringMatch_Commented'] | ForEach-Object {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "    $($_.File)" -ForegroundColor White
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            }
         }
-    }
-    else {
-        Write-Host "  None found" -ForegroundColor Gray
+        else {
+            Write-Host "  None found" -ForegroundColor Gray
+        }
     }
 }
 elseif ($mode -eq 'Name') {
@@ -708,9 +732,11 @@ elseif ($mode -eq 'Name') {
             $criticalFound = $true
             Write-Host "  Pattern: $($searchPatterns[$key].Display)" -ForegroundColor Yellow
             $results[$key] | ForEach-Object {
-                $lineNumbers = $_.Lines -join ', '
                 Write-Host "    $($_.File)" -ForegroundColor White
-                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+                if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                    $lineNumbers = $_.Lines -join ', '
+                    Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+                }
             }
         }
     }
@@ -723,9 +749,11 @@ elseif ($mode -eq 'Name') {
     if ($results.ContainsKey('Email_Unknown') -and @($results['Email_Unknown']).Count -gt 0) {
         Write-Host "  Pattern: $($searchPatterns['Email_Unknown'].Display)" -ForegroundColor Yellow
         $results['Email_Unknown'] | ForEach-Object {
-            $lineNumbers = $_.Lines -join ', '
             Write-Host "    $($_.File)" -ForegroundColor White
-            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            }
         }
     }
     else {
@@ -737,9 +765,11 @@ elseif ($mode -eq 'Name') {
     if ($results.ContainsKey('Email_IGSolutions') -and @($results['Email_IGSolutions']).Count -gt 0) {
         Write-Host "  Pattern: $($searchPatterns['Email_IGSolutions'].Display)" -ForegroundColor Yellow
         $results['Email_IGSolutions'] | ForEach-Object {
-            $lineNumbers = $_.Lines -join ', '
             Write-Host "    $($_.File)" -ForegroundColor White
-            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            }
         }
     }
     else {
@@ -750,9 +780,11 @@ elseif ($mode -eq 'Name') {
     if ($results.ContainsKey('Email_Intelliguard') -and @($results['Email_Intelliguard']).Count -gt 0) {
         Write-Host "  Pattern: $($searchPatterns['Email_Intelliguard'].Display)" -ForegroundColor Yellow
         $results['Email_Intelliguard'] | ForEach-Object {
-            $lineNumbers = $_.Lines -join ', '
             Write-Host "    $($_.File)" -ForegroundColor White
-            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            }
         }
     }
     else {
@@ -767,9 +799,11 @@ elseif ($mode -eq 'Name') {
             $warningFound = $true
             Write-Host "  Pattern: $($searchPatterns[$key].Display)" -ForegroundColor Yellow
             $results[$key] | ForEach-Object {
-                $lineNumbers = $_.Lines -join ', '
                 Write-Host "    $($_.File)" -ForegroundColor White
-                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+                if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                    $lineNumbers = $_.Lines -join ', '
+                    Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+                }
             }
         }
     }
@@ -777,37 +811,43 @@ elseif ($mode -eq 'Name') {
         Write-Host "  None found" -ForegroundColor Gray
     }
 
-    # Commented out references
-    Write-SectionHeader "COMMENTED OUT REFERENCE" 'DarkYellow'
-    $commentedFound = $false
-    foreach ($key in ($results.Keys | Where-Object { $_ -like '*_Commented' } | Sort-Object)) {
-        if (@($results[$key]).Count -gt 0) {
-            $commentedFound = $true
-            $baseKey = $key -replace '_Commented$', ''
-            $displayName = if ($searchPatterns.ContainsKey($baseKey)) {
-                $searchPatterns[$baseKey].Display
-            } else {
-                $baseKey
-            }
-            Write-Host "  Pattern: $displayName (in comments)" -ForegroundColor DarkYellow
-            $results[$key] | ForEach-Object {
-                $lineNumbers = $_.Lines -join ', '
-                Write-Host "    $($_.File)" -ForegroundColor White
-                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+    # Commented out references (only shown if line numbers enabled)
+    if ($IncludeLineNumbers) {
+        Write-SectionHeader "COMMENTED OUT REFERENCE" 'DarkYellow'
+        $commentedFound = $false
+        foreach ($key in ($results.Keys | Where-Object { $_ -like '*_Commented' } | Sort-Object)) {
+            if (@($results[$key]).Count -gt 0) {
+                $commentedFound = $true
+                $baseKey = $key -replace '_Commented$', ''
+                # Safely get display name with strict mode compatibility
+                $pattern = if ($searchPatterns.ContainsKey($baseKey)) { $searchPatterns[$baseKey] } else { $null }
+                $displayName = if ($pattern -and $pattern.Display) {
+                    $pattern.Display
+                } else {
+                    $baseKey
+                }
+                Write-Host "  Pattern: $displayName (in comments)" -ForegroundColor DarkYellow
+                $results[$key] | ForEach-Object {
+                    $lineNumbers = $_.Lines -join ', '
+                    Write-Host "    $($_.File)" -ForegroundColor White
+                    Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+                }
             }
         }
-    }
-    if (-not $commentedFound) {
-        Write-Host "  None found" -ForegroundColor Gray
+        if (-not $commentedFound) {
+            Write-Host "  None found" -ForegroundColor Gray
+        }
     }
 }
 elseif ($mode -eq 'Keys') {
     Write-SectionHeader "POTENTIAL SECRETS/KEYS" 'Red'
     if ($results.ContainsKey('Keys_Potential') -and @($results['Keys_Potential']).Count -gt 0) {
         $results['Keys_Potential'] | ForEach-Object {
-            $lineNumbers = $_.Lines -join ', '
             Write-Host "  $($_.File)" -ForegroundColor Yellow
-            Write-Host "    Lines: $lineNumbers" -ForegroundColor Gray
+            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "    Lines: $lineNumbers" -ForegroundColor Gray
+            }
         }
         Write-Host ""
         Write-Host "  WARNING: Review these files manually for false positives" -ForegroundColor Yellow
