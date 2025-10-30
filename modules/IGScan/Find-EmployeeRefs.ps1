@@ -130,11 +130,11 @@ function Add-DefenderExclusionSafe {
 
     try {
         Add-MpPreference -ExclusionPath $Path -ErrorAction Stop
-        Write-Host "✓ Added Windows Defender exclusion for: $Path" -ForegroundColor Green
+        Write-Host "[OK] Added Windows Defender exclusion for: $Path" -ForegroundColor Green
         return $true
     }
     catch {
-        Write-Host "✗ Failed to add Windows Defender exclusion: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "[ERROR] Failed to add Windows Defender exclusion: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
@@ -235,24 +235,24 @@ if (-not $SkipPerformanceCheck) {
     $driveType = Test-DriveType $RootPath
     if ($driveType) {
         if ($driveType -eq 'SSD') {
-            Write-Host "✓ Drive type: SSD (optimal)" -ForegroundColor Green
+            Write-Host "[OK] Drive type: SSD (optimal)" -ForegroundColor Green
         }
         elseif ($driveType -eq 'HDD') {
-            Write-Host "⚠ Drive type: HDD (slower)" -ForegroundColor Yellow
+            Write-Host "[WARN] Drive type: HDD (slower)" -ForegroundColor Yellow
             Write-Host "  TIP: Moving repo to SSD can give 2-5x speedup" -ForegroundColor Gray
         }
         else {
-            Write-Host "? Drive type: $driveType" -ForegroundColor Gray
+            Write-Host "[?] Drive type: $driveType" -ForegroundColor Gray
         }
     }
 
     # Check 2: Windows Defender Exclusion
     $isExcluded = Test-DefenderExclusion $RootPath
     if ($isExcluded) {
-        Write-Host "✓ Windows Defender: Path is excluded (optimal)" -ForegroundColor Green
+        Write-Host "[OK] Windows Defender: Path is excluded (optimal)" -ForegroundColor Green
     }
     else {
-        Write-Host "⚠ Windows Defender: Scanning files (2-5x slower!)" -ForegroundColor Yellow
+        Write-Host "[WARN] Windows Defender: Scanning files (slow)" -ForegroundColor Yellow
 
         if ($AddDefenderExclusion) {
             Write-Host "  Attempting to add exclusion..." -ForegroundColor Gray
@@ -343,18 +343,24 @@ elseif ($mode -eq 'Name') {
 
     # Single email pattern - just username@ (no domain categorization during scan)
     if ($username) {
-        $patternParts += "$([regex]::Escape($username))@[a-z0-9.-]+(?:\.[a-z]{2,})?"
+        # Build pattern without interpolation issues in PS 5.1
+        $emailPattern = [regex]::Escape($username) + '@[a-z0-9.-]+(?:\.[a-z]{2,})?'
+        $patternParts += $emailPattern
     }
 
     # Warning patterns - username, firstName, lastName
     if ($username) {
-        $patternParts += "\b$([regex]::Escape($username))\b(?!@)"
+        # Build pattern without interpolation issues in PS 5.1
+        $usernamePattern = '\b' + [regex]::Escape($username) + '\b(?!@)'
+        $patternParts += $usernamePattern
     }
     if (-not [string]::IsNullOrWhiteSpace($firstName)) {
-        $patternParts += "\s$([regex]::Escape($firstName))\s"
+        $firstNamePattern = '\s' + [regex]::Escape($firstName) + '\s'
+        $patternParts += $firstNamePattern
     }
     if (-not [string]::IsNullOrWhiteSpace($lastName)) {
-        $patternParts += "\s$([regex]::Escape($lastName))\s"
+        $lastNamePattern = '\s' + [regex]::Escape($lastName) + '\s'
+        $patternParts += $lastNamePattern
     }
 
     if ($patternParts.Count -gt 0) {
