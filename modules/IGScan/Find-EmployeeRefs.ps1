@@ -467,7 +467,7 @@ $scanScriptBlock = {
         # Build line start position map ONCE (much faster than counting newlines repeatedly)
         $lineStarts = [System.Collections.Generic.List[int]]::new()
         $lineStarts.Add(0)
-        for ($i = 0; $i < $content.Length; $i++) {
+        for ($i = 0; $i -lt $content.Length; $i++) {
             if ($content[$i] -eq "`n") {
                 $lineStarts.Add($i + 1)
             }
@@ -480,7 +480,7 @@ $scanScriptBlock = {
         $getLineNumber = {
             param([int]$charPos)
             for ($idx = $lineStarts.Count - 1; $idx -ge 0; $idx--) {
-                if ($charPos >= $lineStarts[$idx]) {
+                if ($charPos -ge $lineStarts[$idx]) {
                     return $idx + 1
                 }
             }
