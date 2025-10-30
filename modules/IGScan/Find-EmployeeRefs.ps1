@@ -222,18 +222,18 @@ elseif ($mode -eq 'Name') {
         }
     }
 
-    # Email patterns
+    # Email patterns (matches with or without TLD)
     if ($username) {
         $searchPatterns['Email_IGSolutions'] = @{
-            Pattern = [regex]::new([regex]::Escape("$username@igsolutions"), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-            Display = "$username@igsolutions.com"
+            Pattern = [regex]::new("\b$([regex]::Escape($username))@igsolutions(?:\.[a-z]{2,})?", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = "$username@igsolutions"
         }
         $searchPatterns['Email_Intelliguard'] = @{
-            Pattern = [regex]::new([regex]::Escape("$username@intelliguardhealth"), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-            Display = "$username@intelliguardhealth.com"
+            Pattern = [regex]::new("\b$([regex]::Escape($username))@intelliguardhealth(?:\.[a-z]{2,})?", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = "$username@intelliguardhealth"
         }
         $searchPatterns['Email_Unknown'] = @{
-            Pattern = [regex]::new("\b$([regex]::Escape($username))@(?!(?:igsolutions\.com|intelliguardhealth\.com)\b)[a-z0-9.-]+\.[a-z]{2,}\b", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Pattern = [regex]::new("\b$([regex]::Escape($username))@(?!(?:igsolutions|intelliguardhealth))[a-z0-9.-]+\.[a-z]{2,}\b", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             Display = "$username@<unknown-domain>"
         }
     }
@@ -257,6 +257,32 @@ elseif ($mode -eq 'Name') {
             Display = $lastName
         }
     }
+}
+elseif ($mode -eq 'File') {
+    Write-Host ""
+    Write-Host "File search options:" -ForegroundColor Cyan
+    Write-Host "  [1] Exact filename (e.g., 'config.json')"
+    Write-Host "  [2] Partial filename (e.g., 'config')"
+    Write-Host "  [3] Exact name, any extension (e.g., 'config' → config.*)"
+    Write-Host ""
+
+    $fileSearchMode = $null
+    while (-not $fileSearchMode) {
+        $choice = Read-Host "Choose option [1, 2, 3]"
+        switch ($choice.Trim()) {
+            '1' { $fileSearchMode = 'Exact' }
+            '2' { $fileSearchMode = 'Partial' }
+            '3' { $fileSearchMode = 'AnyExtension' }
+            default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
+        }
+    }
+
+    $fileName = Read-Host "Enter filename to search"
+    if ([string]::IsNullOrWhiteSpace($fileName)) {
+        Write-Host "ERROR: Filename cannot be empty" -ForegroundColor Red
+        exit 1
+    }
+    $fileName = $fileName.Trim()
 }
 elseif ($mode -eq 'Keys') {
     $customKey = (Read-Host "Optional: Enter specific key to search for (or press Enter)").Trim()
@@ -310,6 +336,85 @@ Write-Host "Found $($targetFiles.Count) files to scan" -ForegroundColor Green
 
 #endregion
 
+#region File Search Mode (Special handling - no content scanning)
+
+if ($mode -eq 'File') {
+    Write-Host ""
+    Write-Host "Searching filenames..." -ForegroundColor Cyan
+
+    $matchedFiles = [System.Collections.Generic.List[string]]::new()
+    $startTime = Get-Date
+
+    foreach ($file in $targetFiles) {
+        $fileNameOnly = [System.IO.Path]::GetFileName($file)
+        $fileNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($file)
+
+        $isMatch = $false
+        switch ($fileSearchMode) {
+            'Exact' {
+                # Exact match (case-insensitive)
+                if ($fileNameOnly -eq $fileName) {
+                    $isMatch = $true
+                }
+            }
+            'Partial' {
+                # Partial match (case-insensitive)
+                if ($fileNameOnly -like "*$fileName*") {
+                    $isMatch = $true
+                }
+            }
+            'AnyExtension' {
+                # Exact name without extension
+                if ($fileNameWithoutExt -eq $fileName) {
+                    $isMatch = $true
+                }
+            }
+        }
+
+        if ($isMatch) {
+            $matchedFiles.Add($file)
+        }
+    }
+
+    $elapsed = (Get-Date) - $startTime
+
+    # Display results
+    Write-Host ""
+    Write-Host "=" * 80 -ForegroundColor Cyan
+    Write-Host "FILE SEARCH RESULTS" -ForegroundColor Cyan
+    Write-Host "=" * 80 -ForegroundColor Cyan
+    Write-Host ""
+
+    $modeDescription = switch ($fileSearchMode) {
+        'Exact' { "Exact match" }
+        'Partial' { "Partial match" }
+        'AnyExtension' { "Exact name, any extension" }
+    }
+
+    Write-Host "Query: `"$fileName`" ($modeDescription)" -ForegroundColor Yellow
+    Write-Host "Found $($matchedFiles.Count) file(s) in $([int]$elapsed.TotalSeconds) second(s)" -ForegroundColor Green
+    Write-Host ""
+
+    if ($matchedFiles.Count -gt 0) {
+        foreach ($file in $matchedFiles) {
+            Write-Host "  $file" -ForegroundColor White
+        }
+    }
+    else {
+        Write-Host "  No files found matching '$fileName'" -ForegroundColor Gray
+    }
+
+    Write-Host ""
+    Write-Host "=" * 80 -ForegroundColor Cyan
+    Write-Host "Searched $($targetFiles.Count) files" -ForegroundColor Cyan
+    Write-Host "=" * 80 -ForegroundColor Cyan
+    Write-Host ""
+
+    exit 0
+}
+
+#endregion
+
 #region Parallel Scanning with Runspaces
 
 Write-Host ""
@@ -347,49 +452,122 @@ $runspacePool.Open()
 $scanScriptBlock = {
     param($File, $SearchPatterns, $Mode, $SearchString, $Results, $PatternCounts)
 
-    try {
-        # Read file content with line tracking
-        $lines = [System.IO.File]::ReadAllLines($File)
-        $content = $lines -join "`n"
+    # Helper to detect if a line is commented
+    function Is-CommentedLine {
+        param([string]$line)
+        $trimmed = $line.TrimStart()
+        # Common comment patterns: SQL (--), PowerShell (#), C-style (//), Batch (REM)
+        return ($trimmed -match '^(--|#|//|REM\s|/\*|\*)')
+    }
 
-        if ($Mode -eq 'String') {
-            # Find all line numbers for string matches
-            $matchedLines = [System.Collections.Generic.List[int]]::new()
-            for ($i = 0; $i -lt $lines.Count; $i++) {
-                if ($lines[$i] -match [regex]::Escape($SearchString)) {
-                    $matchedLines.Add($i + 1)  # 1-based line numbers
+    try {
+        $content = [System.IO.File]::ReadAllText($File)
+        if ([string]::IsNullOrEmpty($content)) { return }
+
+        # Build line start position map ONCE (much faster than counting newlines repeatedly)
+        $lineStarts = [System.Collections.Generic.List[int]]::new()
+        $lineStarts.Add(0)
+        for ($i = 0; $i < $content.Length; $i++) {
+            if ($content[$i] -eq "`n") {
+                $lineStarts.Add($i + 1)
+            }
+        }
+
+        # Also get line texts for comment detection
+        $lines = $content -split "`n"
+
+        # Fast line number lookup function (binary search would be even faster, but this is good enough)
+        $getLineNumber = {
+            param([int]$charPos)
+            for ($idx = $lineStarts.Count - 1; $idx -ge 0; $idx--) {
+                if ($charPos >= $lineStarts[$idx]) {
+                    return $idx + 1
                 }
             }
+            return 1
+        }
+
+        if ($Mode -eq 'String') {
+            $matchedLines = [System.Collections.Generic.HashSet[int]]::new()
+            $commentedLines = [System.Collections.Generic.HashSet[int]]::new()
+
+            $pattern = [regex]::new([regex]::Escape($SearchString), [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            $matches = $pattern.Matches($content)
+
+            foreach ($match in $matches) {
+                $lineNum = & $getLineNumber $match.Index
+                [void]$matchedLines.Add($lineNum)
+                # Check if this line is commented
+                if (Is-CommentedLine $lines[$lineNum - 1]) {
+                    [void]$commentedLines.Add($lineNum)
+                }
+            }
+
             if ($matchedLines.Count -gt 0) {
-                $Results['StringMatch'].Add([PSCustomObject]@{
-                    File = $File
-                    Lines = $matchedLines.ToArray()
-                })
-                $null = $PatternCounts.AddOrUpdate('StringMatch', 1, { param($k, $v) $v + 1 })
+                $activeLines = [System.Collections.Generic.HashSet[int]]::new($matchedLines)
+                $activeLines.ExceptWith($commentedLines)
+
+                if ($activeLines.Count -gt 0) {
+                    $Results['StringMatch'].Add([PSCustomObject]@{
+                        File = $File
+                        Lines = ($activeLines | Sort-Object)
+                        IsCommented = $false
+                    })
+                    $null = $PatternCounts.AddOrUpdate('StringMatch', 1, { param($k, $v) $v + 1 })
+                }
+
+                if ($commentedLines.Count -gt 0) {
+                    $Results['StringMatch_Commented'].Add([PSCustomObject]@{
+                        File = $File
+                        Lines = ($commentedLines | Sort-Object)
+                        IsCommented = $true
+                    })
+                }
             }
         }
         else {
-            # Check all patterns and get line numbers
+            # Check all patterns
             foreach ($key in $SearchPatterns.Keys) {
                 $pattern = $SearchPatterns[$key].Pattern
                 $matches = $pattern.Matches($content)
 
                 if ($matches.Count -gt 0) {
-                    # Find line numbers for each match
                     $matchedLines = [System.Collections.Generic.HashSet[int]]::new()
+                    $commentedLines = [System.Collections.Generic.HashSet[int]]::new()
 
                     foreach ($match in $matches) {
-                        # Calculate line number from character index
-                        $textUpToMatch = $content.Substring(0, $match.Index)
-                        $lineNumber = ($textUpToMatch.ToCharArray() | Where-Object { $_ -eq "`n" }).Count + 1
-                        [void]$matchedLines.Add($lineNumber)
+                        $lineNum = & $getLineNumber $match.Index
+                        [void]$matchedLines.Add($lineNum)
+                        # Check if this line is commented
+                        if (Is-CommentedLine $lines[$lineNum - 1]) {
+                            [void]$commentedLines.Add($lineNum)
+                        }
                     }
 
-                    $Results[$key].Add([PSCustomObject]@{
-                        File = $File
-                        Lines = ($matchedLines | Sort-Object)
-                    })
-                    $null = $PatternCounts.AddOrUpdate($key, 1, { param($k, $v) $v + 1 })
+                    # Separate active matches from commented matches
+                    $activeLines = [System.Collections.Generic.HashSet[int]]::new($matchedLines)
+                    $activeLines.ExceptWith($commentedLines)
+
+                    if ($activeLines.Count -gt 0) {
+                        $Results[$key].Add([PSCustomObject]@{
+                            File = $File
+                            Lines = ($activeLines | Sort-Object)
+                            IsCommented = $false
+                        })
+                        $null = $PatternCounts.AddOrUpdate($key, 1, { param($k, $v) $v + 1 })
+                    }
+
+                    if ($commentedLines.Count -gt 0) {
+                        $commentedKey = "${key}_Commented"
+                        if (-not $Results.ContainsKey($commentedKey)) {
+                            [void]$Results.TryAdd($commentedKey, [System.Collections.Concurrent.ConcurrentBag[object]]::new())
+                        }
+                        $Results[$commentedKey].Add([PSCustomObject]@{
+                            File = $File
+                            Lines = ($commentedLines | Sort-Object)
+                            IsCommented = $true
+                        })
+                    }
                 }
             }
         }
@@ -506,6 +684,20 @@ if ($mode -eq 'String') {
     else {
         Write-Host "  No matches found" -ForegroundColor Gray
     }
+
+    # Commented out references
+    Write-SectionHeader "COMMENTED OUT REFERENCE" 'DarkYellow'
+    if ($results.ContainsKey('StringMatch_Commented') -and @($results['StringMatch_Commented']).Count -gt 0) {
+        Write-Host "  String: `"$searchString`" (in comments)" -ForegroundColor DarkYellow
+        $results['StringMatch_Commented'] | ForEach-Object {
+            $lineNumbers = $_.Lines -join ', '
+            Write-Host "    $($_.File)" -ForegroundColor White
+            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+        }
+    }
+    else {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
 }
 elseif ($mode -eq 'Name') {
     # Critical findings
@@ -523,6 +715,20 @@ elseif ($mode -eq 'Name') {
         }
     }
     if (-not $criticalFound) {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
+
+    # Unknown email domains (moved up for visibility)
+    Write-SectionHeader "UNKNOWN EMAIL DOMAINS" 'Red'
+    if ($results.ContainsKey('Email_Unknown') -and @($results['Email_Unknown']).Count -gt 0) {
+        Write-Host "  Pattern: $($searchPatterns['Email_Unknown'].Display)" -ForegroundColor Yellow
+        $results['Email_Unknown'] | ForEach-Object {
+            $lineNumbers = $_.Lines -join ', '
+            Write-Host "    $($_.File)" -ForegroundColor White
+            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+        }
+    }
+    else {
         Write-Host "  None found" -ForegroundColor Gray
     }
 
@@ -553,19 +759,6 @@ elseif ($mode -eq 'Name') {
         Write-Host "  None found" -ForegroundColor Gray
     }
 
-    Write-SectionHeader "UNKNOWN EMAIL DOMAINS" 'Red'
-    if ($results.ContainsKey('Email_Unknown') -and @($results['Email_Unknown']).Count -gt 0) {
-        Write-Host "  Pattern: $($searchPatterns['Email_Unknown'].Display)" -ForegroundColor Yellow
-        $results['Email_Unknown'] | ForEach-Object {
-            $lineNumbers = $_.Lines -join ', '
-            Write-Host "    $($_.File)" -ForegroundColor White
-            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
-        }
-    }
-    else {
-        Write-Host "  None found" -ForegroundColor Gray
-    }
-
     # Warnings
     Write-SectionHeader "WARNINGS" 'Yellow'
     $warningFound = $false
@@ -581,6 +774,30 @@ elseif ($mode -eq 'Name') {
         }
     }
     if (-not $warningFound) {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
+
+    # Commented out references
+    Write-SectionHeader "COMMENTED OUT REFERENCE" 'DarkYellow'
+    $commentedFound = $false
+    foreach ($key in ($results.Keys | Where-Object { $_ -like '*_Commented' } | Sort-Object)) {
+        if (@($results[$key]).Count -gt 0) {
+            $commentedFound = $true
+            $baseKey = $key -replace '_Commented$', ''
+            $displayName = if ($searchPatterns.ContainsKey($baseKey)) {
+                $searchPatterns[$baseKey].Display
+            } else {
+                $baseKey
+            }
+            Write-Host "  Pattern: $displayName (in comments)" -ForegroundColor DarkYellow
+            $results[$key] | ForEach-Object {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "    $($_.File)" -ForegroundColor White
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            }
+        }
+    }
+    if (-not $commentedFound) {
         Write-Host "  None found" -ForegroundColor Gray
     }
 }
