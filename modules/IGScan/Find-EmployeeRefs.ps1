@@ -316,19 +316,26 @@ Write-Host "Scanning files..." -ForegroundColor Cyan
 # Determine optimal thread count (CPU cores, max 8 for I/O bound work)
 $threadCount = [Math]::Min([Environment]::ProcessorCount, 8)
 Write-Host "Using $threadCount parallel threads" -ForegroundColor Gray
+Write-Host ""
 
-# Thread-safe concurrent collections for results
-$results = [System.Collections.Concurrent.ConcurrentDictionary[string, System.Collections.Concurrent.ConcurrentBag[string]]]::new([StringComparer]::OrdinalIgnoreCase)
+# Thread-safe concurrent collections for results (now with line numbers)
+# Structure: PatternKey -> ConcurrentBag of "FilePath|LineNumber1,LineNumber2,..."
+$results = [System.Collections.Concurrent.ConcurrentDictionary[string, System.Collections.Concurrent.ConcurrentBag[object]]]::new([StringComparer]::OrdinalIgnoreCase)
 foreach ($key in $searchPatterns.Keys) {
-    [void]$results.TryAdd($key, [System.Collections.Concurrent.ConcurrentBag[string]]::new())
+    [void]$results.TryAdd($key, [System.Collections.Concurrent.ConcurrentBag[object]]::new())
 }
 if ($mode -eq 'String') {
-    [void]$results.TryAdd('StringMatch', [System.Collections.Concurrent.ConcurrentBag[string]]::new())
+    [void]$results.TryAdd('StringMatch', [System.Collections.Concurrent.ConcurrentBag[object]]::new())
 }
 
-# Shared counter for progress
-$script:processedCount = 0
-$syncHash = [hashtable]::Synchronized(@{ Processed = 0 })
+# Pattern-specific counters for progress display
+$patternCounts = [System.Collections.Concurrent.ConcurrentDictionary[string, int]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($key in $searchPatterns.Keys) {
+    [void]$patternCounts.TryAdd($key, 0)
+}
+if ($mode -eq 'String') {
+    [void]$patternCounts.TryAdd('StringMatch', 0)
+}
 
 # Create runspace pool
 $runspacePool = [runspacefactory]::CreateRunspacePool(1, $threadCount)
@@ -336,22 +343,51 @@ $runspacePool.Open()
 
 # Scriptblock for parallel execution
 $scanScriptBlock = {
-    param($File, $SearchPatterns, $Mode, $SearchString, $Results, $SyncHash)
+    param($File, $SearchPatterns, $Mode, $SearchString, $Results, $PatternCounts)
 
     try {
-        # Read file content
-        $content = [System.IO.File]::ReadAllText($File)
+        # Read file content with line tracking
+        $lines = [System.IO.File]::ReadAllLines($File)
+        $content = $lines -join "`n"
 
         if ($Mode -eq 'String') {
-            if ($content -match [regex]::Escape($SearchString)) {
-                $Results['StringMatch'].Add($File)
+            # Find all line numbers for string matches
+            $matchedLines = [System.Collections.Generic.List[int]]::new()
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                if ($lines[$i] -match [regex]::Escape($SearchString)) {
+                    $matchedLines.Add($i + 1)  # 1-based line numbers
+                }
+            }
+            if ($matchedLines.Count -gt 0) {
+                $Results['StringMatch'].Add([PSCustomObject]@{
+                    File = $File
+                    Lines = $matchedLines.ToArray()
+                })
+                $null = $PatternCounts.AddOrUpdate('StringMatch', 1, { param($k, $v) $v + 1 })
             }
         }
         else {
-            # Check all patterns
+            # Check all patterns and get line numbers
             foreach ($key in $SearchPatterns.Keys) {
-                if ($SearchPatterns[$key].Pattern.IsMatch($content)) {
-                    $Results[$key].Add($File)
+                $pattern = $SearchPatterns[$key].Pattern
+                $matches = $pattern.Matches($content)
+
+                if ($matches.Count -gt 0) {
+                    # Find line numbers for each match
+                    $matchedLines = [System.Collections.Generic.HashSet[int]]::new()
+
+                    foreach ($match in $matches) {
+                        # Calculate line number from character index
+                        $textUpToMatch = $content.Substring(0, $match.Index)
+                        $lineNumber = ($textUpToMatch.ToCharArray() | Where-Object { $_ -eq "`n" }).Count + 1
+                        [void]$matchedLines.Add($lineNumber)
+                    }
+
+                    $Results[$key].Add([PSCustomObject]@{
+                        File = $File
+                        Lines = ($matchedLines | Sort-Object)
+                    })
+                    $null = $PatternCounts.AddOrUpdate($key, 1, { param($k, $v) $v + 1 })
                 }
             }
         }
@@ -359,9 +395,6 @@ $scanScriptBlock = {
     catch {
         # Skip files that can't be read (binary, locked, etc.)
     }
-
-    # Update progress counter
-    $null = [System.Threading.Interlocked]::Increment([ref]$SyncHash.Processed)
 }
 
 # Create and start all runspaces
@@ -369,26 +402,64 @@ $runspaces = [System.Collections.ArrayList]::new()
 $startTime = Get-Date
 
 foreach ($file in $targetFiles) {
-    $powershell = [powershell]::Create().AddScript($scanScriptBlock).AddArgument($file).AddArgument($searchPatterns).AddArgument($mode).AddArgument($searchString).AddArgument($results).AddArgument($syncHash)
+    $powershell = [powershell]::Create().AddScript($scanScriptBlock).AddArgument($file).AddArgument($searchPatterns).AddArgument($mode).AddArgument($searchString).AddArgument($results).AddArgument($patternCounts)
     $powershell.RunspacePool = $runspacePool
 
     [void]$runspaces.Add([PSCustomObject]@{
         PowerShell = $powershell
         AsyncResult = $powershell.BeginInvoke()
+        File = $file
     })
 }
 
-# Monitor progress
+# Monitor progress with pattern-specific updates
 $totalFiles = $targetFiles.Count
-while ($runspaces.AsyncResult.IsCompleted -contains $false) {
-    $processed = $syncHash.Processed
-    $elapsed = (Get-Date) - $startTime
-    $rate = if ($elapsed.TotalSeconds -gt 0) { [int]($processed / $elapsed.TotalSeconds) } else { 0 }
-    $pct = if ($totalFiles -gt 0) { [int](($processed / $totalFiles) * 100) } else { 0 }
+$lastDisplayTime = $startTime
+$displayInterval = [TimeSpan]::FromMilliseconds(500)
 
-    Write-Progress -Activity "Scanning files (parallel)" -Status "$processed of $totalFiles ($rate files/sec)" -PercentComplete $pct
-    Start-Sleep -Milliseconds 200
+Write-Host "Progress updates:" -ForegroundColor Gray
+
+while ($runspaces.AsyncResult.IsCompleted -contains $false) {
+    $completed = ($runspaces.AsyncResult.IsCompleted | Where-Object { $_ -eq $true }).Count
+    $elapsed = (Get-Date) - $startTime
+    $rate = if ($elapsed.TotalSeconds -gt 0) { [int]($completed / $elapsed.TotalSeconds) } else { 0 }
+    $pct = if ($totalFiles -gt 0) { [int](($completed / $totalFiles) * 100) } else { 0 }
+
+    # Update progress bar
+    Write-Progress -Activity "Scanning files (parallel - $threadCount threads)" -Status "$completed of $totalFiles ($rate files/sec)" -PercentComplete $pct
+
+    # Show pattern-specific progress every 500ms
+    $now = Get-Date
+    if (($now - $lastDisplayTime) -ge $displayInterval) {
+        $lastDisplayTime = $now
+
+        # Get current match counts
+        $totalMatches = 0
+        $patternSummary = [System.Text.StringBuilder]::new()
+        [void]$patternSummary.Append("  Files: $completed/$totalFiles ($pct%) | Matches: ")
+
+        $sortedKeys = $patternCounts.Keys | Sort-Object
+        foreach ($key in $sortedKeys) {
+            $count = $patternCounts[$key]
+            if ($count -gt 0) {
+                $totalMatches += $count
+                [void]$patternSummary.Append("$key=$count ")
+            }
+        }
+
+        if ($totalMatches -eq 0) {
+            [void]$patternSummary.Append("(none yet)")
+        }
+
+        Write-Host $patternSummary.ToString() -ForegroundColor DarkGray
+    }
+
+    Start-Sleep -Milliseconds 100
 }
+
+# Final progress update
+$completed = $runspaces.Count
+Write-Progress -Activity "Scanning files" -Status "Completing..." -PercentComplete 100
 
 # Wait for all runspaces to complete and clean up
 foreach ($runspace in $runspaces) {
@@ -402,12 +473,13 @@ $runspacePool.Dispose()
 Write-Progress -Activity "Scanning files" -Completed
 
 $elapsed = (Get-Date) - $startTime
+Write-Host ""
 Write-Host "Scan completed in $([int]$elapsed.TotalSeconds) seconds ($threadCount threads)" -ForegroundColor Green
 
-# Convert ConcurrentBag results to sorted arrays for display
+# Convert results to sorted format (already includes line numbers)
 $sortedResults = @{}
 foreach ($key in $results.Keys) {
-    $sortedResults[$key] = $results[$key].ToArray() | Sort-Object -Unique
+    $sortedResults[$key] = $results[$key].ToArray() | Sort-Object { $_.File }
 }
 $results = $sortedResults
 
@@ -423,7 +495,11 @@ Write-Host "=" * 80 -ForegroundColor Cyan
 if ($mode -eq 'String') {
     Write-SectionHeader "String Match: `"$searchString`"" 'Yellow'
     if ($results.ContainsKey('StringMatch') -and @($results['StringMatch']).Count -gt 0) {
-        $results['StringMatch'] | ForEach-Object { Write-Host "  $_" }
+        $results['StringMatch'] | ForEach-Object {
+            $lineNumbers = $_.Lines -join ', '
+            Write-Host "  $($_.File)" -ForegroundColor White
+            Write-Host "    Lines: $lineNumbers" -ForegroundColor Gray
+        }
     }
     else {
         Write-Host "  No matches found" -ForegroundColor Gray
@@ -437,7 +513,11 @@ elseif ($mode -eq 'Name') {
         if (@($results[$key]).Count -gt 0) {
             $criticalFound = $true
             Write-Host "  Pattern: $($searchPatterns[$key].Display)" -ForegroundColor Yellow
-            $results[$key] | ForEach-Object { Write-Host "    $_" }
+            $results[$key] | ForEach-Object {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "    $($_.File)" -ForegroundColor White
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            }
         }
     }
     if (-not $criticalFound) {
@@ -448,7 +528,11 @@ elseif ($mode -eq 'Name') {
     Write-SectionHeader "IG SOLUTIONS EMAIL" 'Blue'
     if ($results.ContainsKey('Email_IGSolutions') -and @($results['Email_IGSolutions']).Count -gt 0) {
         Write-Host "  Pattern: $($searchPatterns['Email_IGSolutions'].Display)" -ForegroundColor Yellow
-        $results['Email_IGSolutions'] | ForEach-Object { Write-Host "    $_" }
+        $results['Email_IGSolutions'] | ForEach-Object {
+            $lineNumbers = $_.Lines -join ', '
+            Write-Host "    $($_.File)" -ForegroundColor White
+            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+        }
     }
     else {
         Write-Host "  None found" -ForegroundColor Gray
@@ -457,7 +541,11 @@ elseif ($mode -eq 'Name') {
     Write-SectionHeader "INTELLIGUARD HEALTH EMAIL" 'Blue'
     if ($results.ContainsKey('Email_Intelliguard') -and @($results['Email_Intelliguard']).Count -gt 0) {
         Write-Host "  Pattern: $($searchPatterns['Email_Intelliguard'].Display)" -ForegroundColor Yellow
-        $results['Email_Intelliguard'] | ForEach-Object { Write-Host "    $_" }
+        $results['Email_Intelliguard'] | ForEach-Object {
+            $lineNumbers = $_.Lines -join ', '
+            Write-Host "    $($_.File)" -ForegroundColor White
+            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+        }
     }
     else {
         Write-Host "  None found" -ForegroundColor Gray
@@ -466,7 +554,11 @@ elseif ($mode -eq 'Name') {
     Write-SectionHeader "UNKNOWN EMAIL DOMAINS" 'Red'
     if ($results.ContainsKey('Email_Unknown') -and @($results['Email_Unknown']).Count -gt 0) {
         Write-Host "  Pattern: $($searchPatterns['Email_Unknown'].Display)" -ForegroundColor Yellow
-        $results['Email_Unknown'] | ForEach-Object { Write-Host "    $_" }
+        $results['Email_Unknown'] | ForEach-Object {
+            $lineNumbers = $_.Lines -join ', '
+            Write-Host "    $($_.File)" -ForegroundColor White
+            Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+        }
     }
     else {
         Write-Host "  None found" -ForegroundColor Gray
@@ -479,7 +571,11 @@ elseif ($mode -eq 'Name') {
         if (@($results[$key]).Count -gt 0) {
             $warningFound = $true
             Write-Host "  Pattern: $($searchPatterns[$key].Display)" -ForegroundColor Yellow
-            $results[$key] | ForEach-Object { Write-Host "    $_" }
+            $results[$key] | ForEach-Object {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "    $($_.File)" -ForegroundColor White
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            }
         }
     }
     if (-not $warningFound) {
@@ -489,7 +585,11 @@ elseif ($mode -eq 'Name') {
 elseif ($mode -eq 'Keys') {
     Write-SectionHeader "POTENTIAL SECRETS/KEYS" 'Red'
     if ($results.ContainsKey('Keys_Potential') -and @($results['Keys_Potential']).Count -gt 0) {
-        $results['Keys_Potential'] | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+        $results['Keys_Potential'] | ForEach-Object {
+            $lineNumbers = $_.Lines -join ', '
+            Write-Host "  $($_.File)" -ForegroundColor Yellow
+            Write-Host "    Lines: $lineNumbers" -ForegroundColor Gray
+        }
         Write-Host ""
         Write-Host "  WARNING: Review these files manually for false positives" -ForegroundColor Yellow
     }
