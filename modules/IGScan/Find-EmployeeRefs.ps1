@@ -225,11 +225,11 @@ elseif ($mode -eq 'Name') {
     # Email patterns
     if ($username) {
         $searchPatterns['Email_IGSolutions'] = @{
-            Pattern = [regex]::new([regex]::Escape("$username@igsolutions.com"), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Pattern = [regex]::new([regex]::Escape("$username@igsolutions"), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             Display = "$username@igsolutions.com"
         }
         $searchPatterns['Email_Intelliguard'] = @{
-            Pattern = [regex]::new([regex]::Escape("$username@intelliguardhealth.com"), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Pattern = [regex]::new([regex]::Escape("$username@intelliguardhealth"), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             Display = "$username@intelliguardhealth.com"
         }
         $searchPatterns['Email_Unknown'] = @{
