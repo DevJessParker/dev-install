@@ -204,50 +204,47 @@ elseif ($mode -eq 'Name') {
         exit 1
     }
 
-    # Build patterns for name search
-    $username = $null
-    if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
-        $username = ($firstName.Substring(0, 1) + $lastName).ToLower()
-    }
+    # Build ONE combined mega-pattern for maximum performance (single regex search per file)
+    $patternParts = @()
+    $patternMap = @{}  # Maps matched text pattern to category
 
     # Critical patterns
     if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
         $fullNameProper = (Get-Culture).TextInfo.ToTitleCase($firstName.ToLower()) + " " + (Get-Culture).TextInfo.ToTitleCase($lastName.ToLower())
-        $searchPatterns['Critical_USER'] = @{
-            Pattern = [regex]::new("USER $($username.ToUpper())", [System.Text.RegularExpressions.RegexOptions]::Compiled)
-            Display = "USER $($username.ToUpper())"
-        }
-        $searchPatterns['Critical_FullName'] = @{
-            Pattern = [regex]::new([regex]::Escape($fullNameProper), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-            Display = $fullNameProper
-        }
+        $patternParts += "USER $($username.ToUpper())"
+        $patternParts += [regex]::Escape($fullNameProper)
+        $patternMap['Critical_USER'] = "USER $($username.ToUpper())"
+        $patternMap['Critical_FullName'] = $fullNameProper
     }
 
-    # Combined email pattern - ONE regex for all email domains (3x faster!)
-    # Captures the domain so we can categorize during display
+    # Email patterns - separate but in same regex
     if ($username) {
-        $searchPatterns['Email_All'] = @{
-            Pattern = [regex]::new("\b$([regex]::Escape($username))@([a-z0-9.-]+(?:\.[a-z]{2,})?)", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-            Display = "$username@*"
-            CaptureGroup = 1  # Domain is in capture group 1
-        }
+        $patternParts += "$([regex]::Escape($username))@igsolutions(?:\.[a-z]{2,})?"
+        $patternParts += "$([regex]::Escape($username))@intelliguardhealth(?:\.[a-z]{2,})?"
+        $patternParts += "$([regex]::Escape($username))@[a-z0-9.-]+\.[a-z]{2,}"  # Any email (will categorize later)
     }
 
-    # Combined warning patterns into ONE regex with alternation (faster)
-    $warningParts = @()
+    # Warning patterns - username, firstName, lastName
     if ($username) {
-        $warningParts += "\b$([regex]::Escape($username))\b(?!@)"
+        $patternParts += "\b$([regex]::Escape($username))\b(?!@)"
     }
     if (-not [string]::IsNullOrWhiteSpace($firstName)) {
-        $warningParts += "\s$([regex]::Escape($firstName))\s"
+        $patternParts += "\s$([regex]::Escape($firstName))\s"
     }
     if (-not [string]::IsNullOrWhiteSpace($lastName)) {
-        $warningParts += "\s$([regex]::Escape($lastName))\s"
+        $patternParts += "\s$([regex]::Escape($lastName))\s"
     }
-    if ($warningParts.Count -gt 0) {
-        $searchPatterns['Warning_All'] = @{
-            Pattern = [regex]::new("($($warningParts -join '|'))", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-            Display = "Name references"
+
+    if ($patternParts.Count -gt 0) {
+        # Combine all patterns with alternation - ONE pattern to rule them all!
+        $combinedPattern = "($($patternParts -join '|'))"
+        $searchPatterns['Combined_All'] = @{
+            Pattern = [regex]::new($combinedPattern, [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = "All patterns"
+            Username = $username
+            FirstName = $firstName
+            LastName = $lastName
+            FullName = if ($fullNameProper) { $fullNameProper } else { $null }
         }
     }
 }
@@ -530,124 +527,93 @@ $scanScriptBlock = {
             }
         }
         else {
-            # Check all patterns (Name or Keys mode)
+            # Name or Keys mode - use combined pattern for maximum speed
             foreach ($key in $SearchPatterns.Keys) {
                 $pattern = $SearchPatterns[$key].Pattern
                 $matches = $pattern.Matches($content)
 
                 if ($matches.Count -gt 0) {
-                    # Special handling for Email_All pattern - extract and categorize domains
-                    if ($key -eq 'Email_All') {
-                        # Group matches by domain category
-                        $domainMatches = @{
+                    # Special handling for Combined_All - categorize based on matched text
+                    if ($key -eq 'Combined_All') {
+                        # Get metadata from pattern
+                        $username = $SearchPatterns[$key].Username
+                        $fullName = $SearchPatterns[$key].FullName
+
+                        # Group matches by category using simple string checks
+                        $categoryMatches = @{
+                            'Critical_USER' = [System.Collections.Generic.HashSet[int]]::new()
+                            'Critical_FullName' = [System.Collections.Generic.HashSet[int]]::new()
                             'Email_IGSolutions' = [System.Collections.Generic.HashSet[int]]::new()
                             'Email_Intelliguard' = [System.Collections.Generic.HashSet[int]]::new()
                             'Email_Unknown' = [System.Collections.Generic.HashSet[int]]::new()
-                        }
-                        $commentedDomains = @{
-                            'Email_IGSolutions' = [System.Collections.Generic.HashSet[int]]::new()
-                            'Email_Intelliguard' = [System.Collections.Generic.HashSet[int]]::new()
-                            'Email_Unknown' = [System.Collections.Generic.HashSet[int]]::new()
+                            'Warning_All' = [System.Collections.Generic.HashSet[int]]::new()
                         }
 
                         foreach ($match in $matches) {
-                            # Extract domain from capture group 1
-                            $domain = $match.Groups[1].Value.ToLower()
+                            $matchText = $match.Value
+                            $matchTextLower = $matchText.ToLower()
 
-                            # Categorize by domain
-                            $categoryKey = if ($domain -match '^igsolutions') {
+                            # Categorize based on matched text (simple string checks - FAST!)
+                            $category = if ($matchText -eq "USER $($username.ToUpper())") {
+                                'Critical_USER'
+                            } elseif ($fullName -and $matchTextLower -eq $fullName.ToLower()) {
+                                'Critical_FullName'
+                            } elseif ($matchTextLower.Contains('@igsolutions')) {
                                 'Email_IGSolutions'
-                            } elseif ($domain -match '^intelliguardhealth') {
+                            } elseif ($matchTextLower.Contains('@intelliguardhealth')) {
                                 'Email_Intelliguard'
-                            } else {
+                            } elseif ($matchText.Contains('@')) {
                                 'Email_Unknown'
+                            } else {
+                                'Warning_All'
                             }
 
                             if ($IncludeLineNumbers) {
                                 $lineNum = & $getLineNumber $match.Index
-                                if (Is-CommentedLine $lines[$lineNum - 1]) {
-                                    [void]$commentedDomains[$categoryKey].Add($lineNum)
-                                } else {
-                                    [void]$domainMatches[$categoryKey].Add($lineNum)
-                                }
+                                [void]$categoryMatches[$category].Add($lineNum)
                             } else {
-                                [void]$domainMatches[$categoryKey].Add(0)  # Placeholder when no line numbers
+                                [void]$categoryMatches[$category].Add(0)  # Placeholder
                             }
                         }
 
-                        # Store results for each category
-                        foreach ($categoryKey in $domainMatches.Keys) {
-                            if ($domainMatches[$categoryKey].Count -gt 0) {
-                                # Ensure the key exists in Results
-                                if (-not $Results.ContainsKey($categoryKey)) {
-                                    [void]$Results.TryAdd($categoryKey, [System.Collections.Concurrent.ConcurrentBag[object]]::new())
+                        # Store results for each category that has matches
+                        foreach ($category in $categoryMatches.Keys) {
+                            if ($categoryMatches[$category].Count -gt 0) {
+                                if (-not $Results.ContainsKey($category)) {
+                                    [void]$Results.TryAdd($category, [System.Collections.Concurrent.ConcurrentBag[object]]::new())
                                 }
-                                if (-not $PatternCounts.ContainsKey($categoryKey)) {
-                                    [void]$PatternCounts.TryAdd($categoryKey, 0)
+                                if (-not $PatternCounts.ContainsKey($category)) {
+                                    [void]$PatternCounts.TryAdd($category, 0)
                                 }
 
-                                $Results[$categoryKey].Add([PSCustomObject]@{
+                                $Results[$category].Add([PSCustomObject]@{
                                     File = $File
-                                    Lines = if ($IncludeLineNumbers) { ($domainMatches[$categoryKey] | Sort-Object) } else { @() }
+                                    Lines = if ($IncludeLineNumbers) { ($categoryMatches[$category] | Sort-Object | Select-Object -Unique) } else { @() }
                                 })
-                                $null = $PatternCounts.AddOrUpdate($categoryKey, 1, { param($k, $v) $v + 1 })
-                            }
-
-                            if ($IncludeLineNumbers -and $commentedDomains[$categoryKey].Count -gt 0) {
-                                $commentedKey = "${categoryKey}_Commented"
-                                if (-not $Results.ContainsKey($commentedKey)) {
-                                    [void]$Results.TryAdd($commentedKey, [System.Collections.Concurrent.ConcurrentBag[object]]::new())
-                                }
-                                $Results[$commentedKey].Add([PSCustomObject]@{
-                                    File = $File
-                                    Lines = ($commentedDomains[$categoryKey] | Sort-Object)
-                                })
+                                $null = $PatternCounts.AddOrUpdate($category, 1, { param($k, $v) $v + 1 })
                             }
                         }
                     }
                     else {
-                        # Normal pattern handling (non-email patterns)
+                        # Keys mode or other patterns
                         if ($IncludeLineNumbers) {
-                            # Detailed mode with line numbers and comment detection
                             $matchedLines = [System.Collections.Generic.HashSet[int]]::new()
-                            $commentedLines = [System.Collections.Generic.HashSet[int]]::new()
-
                             foreach ($match in $matches) {
                                 $lineNum = & $getLineNumber $match.Index
                                 [void]$matchedLines.Add($lineNum)
-                                # Check if this line is commented
-                                if (Is-CommentedLine $lines[$lineNum - 1]) {
-                                    [void]$commentedLines.Add($lineNum)
-                                }
                             }
 
-                            # Separate active matches from commented matches
-                            $activeLines = [System.Collections.Generic.HashSet[int]]::new($matchedLines)
-                            $activeLines.ExceptWith($commentedLines)
-
-                            if ($activeLines.Count -gt 0) {
+                            if ($matchedLines.Count -gt 0) {
                                 $Results[$key].Add([PSCustomObject]@{
                                     File = $File
-                                    Lines = ($activeLines | Sort-Object)
+                                    Lines = ($matchedLines | Sort-Object)
                                 })
                                 $null = $PatternCounts.AddOrUpdate($key, 1, { param($k, $v) $v + 1 })
                             }
-
-                            if ($commentedLines.Count -gt 0) {
-                                $commentedKey = "${key}_Commented"
-                                if (-not $Results.ContainsKey($commentedKey)) {
-                                    [void]$Results.TryAdd($commentedKey, [System.Collections.Concurrent.ConcurrentBag[object]]::new())
-                                }
-                                $Results[$commentedKey].Add([PSCustomObject]@{
-                                    File = $File
-                                    Lines = ($commentedLines | Sort-Object)
-                                })
-                            }
                         } else {
-                            # Fast mode - just record file has matches
                             $Results[$key].Add([PSCustomObject]@{
                                 File = $File
-                                Lines = @()  # Empty array when line numbers disabled
+                                Lines = @()
                             })
                             $null = $PatternCounts.AddOrUpdate($key, 1, { param($k, $v) $v + 1 })
                         }
@@ -791,19 +757,31 @@ elseif ($mode -eq 'Name') {
     # Critical findings
     Write-SectionHeader "CRITICAL FINDINGS" 'Red'
     $criticalFound = $false
-    foreach ($key in ($results.Keys | Where-Object { $_ -like 'Critical_*' } | Sort-Object)) {
-        if (@($results[$key]).Count -gt 0) {
-            $criticalFound = $true
-            Write-Host "  Pattern: $($searchPatterns[$key].Display)" -ForegroundColor Yellow
-            $results[$key] | ForEach-Object {
-                Write-Host "    $($_.File)" -ForegroundColor White
-                if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
-                    $lineNumbers = $_.Lines -join ', '
-                    Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
-                }
+
+    # Check for USER pattern
+    if ($results.ContainsKey('Critical_USER') -and @($results['Critical_USER']).Count -gt 0) {
+        $criticalFound = $true
+        $results['Critical_USER'] | ForEach-Object {
+            Write-Host "    $($_.File)" -ForegroundColor White
+            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
             }
         }
     }
+
+    # Check for Full Name pattern
+    if ($results.ContainsKey('Critical_FullName') -and @($results['Critical_FullName']).Count -gt 0) {
+        $criticalFound = $true
+        $results['Critical_FullName'] | ForEach-Object {
+            Write-Host "    $($_.File)" -ForegroundColor White
+            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
+                $lineNumbers = $_.Lines -join ', '
+                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            }
+        }
+    }
+
     if (-not $criticalFound) {
         Write-Host "  None found" -ForegroundColor Gray
     }
