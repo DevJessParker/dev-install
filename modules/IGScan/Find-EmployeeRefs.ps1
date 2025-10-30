@@ -160,16 +160,18 @@ Write-SectionHeader "Select Search Mode"
 Write-Host "  [1] Name Mode     - Search for employee names and emails"
 Write-Host "  [2] String Mode   - Search for any string (case-insensitive)"
 Write-Host "  [3] Keys Mode     - Scan for exposed API keys and secrets"
+Write-Host "  [4] File Mode     - Search for files by name"
 Write-Host "  [Q] Quit"
 Write-Host ""
 
 $mode = $null
 while (-not $mode) {
-    $choice = Read-Host "Enter choice [1, 2, 3, Q]"
+    $choice = Read-Host "Enter choice [1, 2, 3, 4, Q]"
     switch ($choice.Trim().ToUpper()) {
         '1' { $mode = 'Name' }
         '2' { $mode = 'String' }
         '3' { $mode = 'Keys' }
+        '4' { $mode = 'File' }
         'Q' { Write-Host "Exiting."; exit 0 }
         default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
     }
