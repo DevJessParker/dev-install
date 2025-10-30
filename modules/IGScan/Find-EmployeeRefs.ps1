@@ -14,6 +14,21 @@
 
 .PARAMETER Extensions
     Comma-separated list of file extensions to scan
+
+.NOTES
+    Compatible with: PowerShell 5.1+
+    Requires: .NET Framework 4.5+ (included with Windows PowerShell 5.1)
+
+    Performance: Scans each file once, checking all patterns simultaneously
+    Expected speed: 30-60 seconds for 25k+ files on modern hardware
+
+.EXAMPLE
+    .\Find-EmployeeRefs.ps1
+    Interactive mode - prompts for search mode and parameters
+
+.EXAMPLE
+    .\Find-EmployeeRefs.ps1 -RootPath "C:\repo\myproject"
+    Scan specific directory
 #>
 
 [CmdletBinding()]
