@@ -214,21 +214,16 @@ elseif ($mode -eq 'Name') {
 
     # Build ONE combined mega-pattern for maximum performance (single regex search per file)
     $patternParts = @()
-    $patternMap = @{}  # Maps matched text pattern to category
 
     # Critical patterns
     if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
         $patternParts += "USER $($username.ToUpper())"
         $patternParts += [regex]::Escape($fullNameProper)
-        $patternMap['Critical_USER'] = "USER $($username.ToUpper())"
-        $patternMap['Critical_FullName'] = $fullNameProper
     }
 
-    # Email patterns - separate but in same regex
+    # Single email pattern - just username@ (no domain categorization during scan)
     if ($username) {
-        $patternParts += "$([regex]::Escape($username))@igsolutions(?:\.[a-z]{2,})?"
-        $patternParts += "$([regex]::Escape($username))@intelliguardhealth(?:\.[a-z]{2,})?"
-        $patternParts += "$([regex]::Escape($username))@[a-z0-9.-]+\.[a-z]{2,}"  # Any email (will categorize later)
+        $patternParts += "$([regex]::Escape($username))@[a-z0-9.-]+(?:\.[a-z]{2,})?"
     }
 
     # Warning patterns - username, firstName, lastName
@@ -251,7 +246,7 @@ elseif ($mode -eq 'Name') {
             Username = $username
             FirstName = $firstName
             LastName = $lastName
-            FullName = if ($fullNameProper) { $fullNameProper } else { $null }
+            FullName = $fullNameProper
         }
     }
 }
@@ -550,11 +545,12 @@ $scanScriptBlock = {
                         $categoryMatches = @{
                             'Critical_USER' = [System.Collections.Generic.HashSet[int]]::new()
                             'Critical_FullName' = [System.Collections.Generic.HashSet[int]]::new()
-                            'Email_IGSolutions' = [System.Collections.Generic.HashSet[int]]::new()
-                            'Email_Intelliguard' = [System.Collections.Generic.HashSet[int]]::new()
-                            'Email_Unknown' = [System.Collections.Generic.HashSet[int]]::new()
+                            'Email_All' = [System.Collections.Generic.HashSet[int]]::new()
                             'Warning_All' = [System.Collections.Generic.HashSet[int]]::new()
                         }
+
+                        # Store full email text for display coloring later
+                        $emailMatches = [System.Collections.Generic.List[PSCustomObject]]::new()
 
                         foreach ($match in $matches) {
                             $matchText = $match.Value
@@ -565,12 +561,8 @@ $scanScriptBlock = {
                                 'Critical_USER'
                             } elseif ($fullName -and $matchTextLower -eq $fullName.ToLower()) {
                                 'Critical_FullName'
-                            } elseif ($matchTextLower.Contains('@igsolutions')) {
-                                'Email_IGSolutions'
-                            } elseif ($matchTextLower.Contains('@intelliguardhealth')) {
-                                'Email_Intelliguard'
                             } elseif ($matchText.Contains('@')) {
-                                'Email_Unknown'
+                                'Email_All'
                             } else {
                                 'Warning_All'
                             }
@@ -578,8 +570,24 @@ $scanScriptBlock = {
                             if ($IncludeLineNumbers) {
                                 $lineNum = & $getLineNumber $match.Index
                                 [void]$categoryMatches[$category].Add($lineNum)
+
+                                # Store email match details for later display
+                                if ($category -eq 'Email_All') {
+                                    $emailMatches.Add([PSCustomObject]@{
+                                        Email = $matchText
+                                        LineNum = $lineNum
+                                    })
+                                }
                             } else {
                                 [void]$categoryMatches[$category].Add(0)  # Placeholder
+
+                                # Store email match details for later display
+                                if ($category -eq 'Email_All') {
+                                    $emailMatches.Add([PSCustomObject]@{
+                                        Email = $matchText
+                                        LineNum = 0
+                                    })
+                                }
                             }
                         }
 
@@ -593,10 +601,17 @@ $scanScriptBlock = {
                                     [void]$PatternCounts.TryAdd($category, 0)
                                 }
 
-                                $Results[$category].Add([PSCustomObject]@{
+                                $resultObj = [PSCustomObject]@{
                                     File = $File
                                     Lines = if ($IncludeLineNumbers) { ($categoryMatches[$category] | Sort-Object | Select-Object -Unique) } else { @() }
-                                })
+                                }
+
+                                # Add email details if this is email category
+                                if ($category -eq 'Email_All' -and $emailMatches.Count -gt 0) {
+                                    $resultObj | Add-Member -NotePropertyName 'Emails' -NotePropertyValue $emailMatches
+                                }
+
+                                $Results[$category].Add($resultObj)
                                 $null = $PatternCounts.AddOrUpdate($category, 1, { param($k, $v) $v + 1 })
                             }
                         }
@@ -793,42 +808,30 @@ elseif ($mode -eq 'Name') {
         Write-Host "  None found" -ForegroundColor Gray
     }
 
-    # Unknown email domains (moved up for visibility) - CRITICAL shown in RED
-    Write-SectionHeader "UNKNOWN EMAIL DOMAINS (CRITICAL)" 'Red'
-    if ($results.ContainsKey('Email_Unknown') -and @($results['Email_Unknown']).Count -gt 0) {
-        $results['Email_Unknown'] | ForEach-Object {
-            Write-Host "    $($_.File)" -ForegroundColor Red
-            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
-                $lineNumbers = $_.Lines -join ', '
-                Write-Host "      Lines: $lineNumbers" -ForegroundColor DarkRed
-            }
-        }
-    }
-    else {
-        Write-Host "  None found" -ForegroundColor Gray
-    }
+    # Email findings - all in one section with color coding
+    Write-SectionHeader "EMAIL FINDINGS" 'Cyan'
+    if ($results.ContainsKey('Email_All') -and @($results['Email_All']).Count -gt 0) {
+        $results['Email_All'] | ForEach-Object {
+            $fileEntry = $_
 
-    # Email findings
-    Write-SectionHeader "IG SOLUTIONS EMAIL" 'Blue'
-    if ($results.ContainsKey('Email_IGSolutions') -and @($results['Email_IGSolutions']).Count -gt 0) {
-        $results['Email_IGSolutions'] | ForEach-Object {
-            Write-Host "    $($_.File)" -ForegroundColor White
-            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
-                $lineNumbers = $_.Lines -join ', '
-                Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
+            # Determine if file has unknown domains (for coloring)
+            $hasUnknown = $false
+            if ($fileEntry.Emails) {
+                foreach ($emailEntry in $fileEntry.Emails) {
+                    $email = $emailEntry.Email.ToLower()
+                    if (-not ($email.Contains('@igsolutions') -or $email.Contains('@intelliguardhealth'))) {
+                        $hasUnknown = $true
+                        break
+                    }
+                }
             }
-        }
-    }
-    else {
-        Write-Host "  None found" -ForegroundColor Gray
-    }
 
-    Write-SectionHeader "INTELLIGUARD HEALTH EMAIL" 'Blue'
-    if ($results.ContainsKey('Email_Intelliguard') -and @($results['Email_Intelliguard']).Count -gt 0) {
-        $results['Email_Intelliguard'] | ForEach-Object {
-            Write-Host "    $($_.File)" -ForegroundColor White
-            if ($IncludeLineNumbers -and $_.Lines -and @($_.Lines).Count -gt 0) {
-                $lineNumbers = $_.Lines -join ', '
+            # Display file in red if has unknown domains, white otherwise
+            $fileColor = if ($hasUnknown) { 'Red' } else { 'White' }
+            Write-Host "    $($fileEntry.File)" -ForegroundColor $fileColor
+
+            if ($IncludeLineNumbers -and $fileEntry.Lines -and @($fileEntry.Lines).Count -gt 0) {
+                $lineNumbers = $fileEntry.Lines -join ', '
                 Write-Host "      Lines: $lineNumbers" -ForegroundColor Gray
             }
         }
