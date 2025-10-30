@@ -204,13 +204,20 @@ elseif ($mode -eq 'Name') {
         exit 1
     }
 
+    # Build username from first initial + last name
+    $username = $null
+    $fullNameProper = $null
+    if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
+        $username = ($firstName.Substring(0, 1) + $lastName).ToLower()
+        $fullNameProper = (Get-Culture).TextInfo.ToTitleCase($firstName.ToLower()) + " " + (Get-Culture).TextInfo.ToTitleCase($lastName.ToLower())
+    }
+
     # Build ONE combined mega-pattern for maximum performance (single regex search per file)
     $patternParts = @()
     $patternMap = @{}  # Maps matched text pattern to category
 
     # Critical patterns
     if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
-        $fullNameProper = (Get-Culture).TextInfo.ToTitleCase($firstName.ToLower()) + " " + (Get-Culture).TextInfo.ToTitleCase($lastName.ToLower())
         $patternParts += "USER $($username.ToUpper())"
         $patternParts += [regex]::Escape($fullNameProper)
         $patternMap['Critical_USER'] = "USER $($username.ToUpper())"
