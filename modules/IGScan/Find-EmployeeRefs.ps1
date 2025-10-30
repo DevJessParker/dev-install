@@ -1,379 +1,448 @@
 <#
-Find-EmployeeRefs.ps1  (Windows PowerShell 5.1)
-Includes progress bars and large-repo optimizations.
+.SYNOPSIS
+    Fast employee reference scanner - single-pass file scanning
+
+.DESCRIPTION
+    Scans large repositories for employee names, emails, and secrets in a single pass.
+    Optimized for performance by reading each file only once.
+
+.PARAMETER RootPath
+    Root directory to scan. Auto-detects igsolutions_repo if not provided.
+
+.PARAMETER MaxFileSizeMB
+    Maximum file size to scan in MB (default: 5)
+
+.PARAMETER Extensions
+    Comma-separated list of file extensions to scan
 #>
 
 [CmdletBinding()]
 param(
-  [string]$RootPath,
-  [int]$MaxFileSizeMB = 5,
-  [string]$Extensions
+    [string]$RootPath,
+    [int]$MaxFileSizeMB = 5,
+    [string]$Extensions
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function Write-GroupHeader([string]$title, [string]$color) {
-  Write-Host ""
-  Write-Host $title -ForegroundColor $color
-}
-function Print-PathsFromMatches([System.Object[]]$matches) {
-  if ($matches -and @($matches).Count -gt 0) {
-    $paths = $matches | Select-Object -ExpandProperty Path -Unique | Sort-Object
-    foreach ($p in $paths) { Write-Host ("  - " + $p) }
-  }
-}
-function To-Proper([string]$s) {
-  if ([string]::IsNullOrEmpty($s)) { return $s }
-  if ($s.Length -eq 1) { return $s.ToUpper() }
-  $s.Substring(0,1).ToUpper() + $s.Substring(1)
-}
-function Find-Literal([string]$text, [switch]$CaseSensitive, [string[]]$Paths) {
-  if ([string]::IsNullOrEmpty($text) -or -not $Paths -or @($Paths).Count -eq 0) { return @() }
-  if ($CaseSensitive) {
-    Select-String -Path $Paths -SimpleMatch $text -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue
-  } else {
-    Select-String -Path $Paths -SimpleMatch $text -AllMatches:$false -List -ErrorAction SilentlyContinue
-  }
-}
-function Find-Regex([string]$pattern, [switch]$CaseSensitive, [string[]]$Paths) {
-  if ([string]::IsNullOrEmpty($pattern) -or -not $Paths -or @($Paths).Count -eq 0) { return @() }
-  if ($CaseSensitive) {
-    Select-String -Path $Paths -Pattern $pattern -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue
-  } else {
-    Select-String -Path $Paths -Pattern $pattern -AllMatches:$false -List -ErrorAction SilentlyContinue
-  }
+#region Helper Functions
+
+function Write-SectionHeader {
+    param([string]$Title, [string]$Color = 'Cyan')
+    Write-Host ""
+    Write-Host $Title -ForegroundColor $Color
 }
 
-if ([string]::IsNullOrWhiteSpace($RootPath)) {
-    Write-Host "No RootPath provided. Searching for 'igsolutions_repo'..." -ForegroundColor Cyan
+function Get-ExcludedDirectoriesPattern {
+    $excludedDirs = @(
+        # Package managers
+        'node_modules', 'bower_components', 'jspm_packages', 'packages',
+        'vendor', 'vendors', 'site-packages', 'dist-packages',
+        # Version control
+        '\.git', '\.svn', '\.hg',
+        # IDE
+        '\.vs', '\.vscode', '\.idea',
+        # Build outputs
+        'bin', 'obj', 'dist', 'build', 'out', 'target',
+        # Caches
+        '\.cache', '\.next', '\.nuxt', '__pycache__',
+        # Logs
+        'logs', 'tmp', 'temp'
+    )
+    return '\\(' + ($excludedDirs -join '|') + ')(\\|$)'
+}
 
-    $searchRoots = @()
-    try { $searchRoots += [Environment]::GetFolderPath("UserProfile") } catch {}
-    if (-not $searchRoots -or -not (Test-Path $searchRoots[0])) { $searchRoots = @("C:\Users") }
+function Get-TargetFiles {
+    param(
+        [string]$RootPath,
+        [hashtable]$ExtensionHash,
+        [long]$MaxBytes,
+        [string]$ExcludePattern
+    )
 
-    $possibleRoots = @()
-    foreach ($root in $searchRoots) {
-        $possibleRoots += Join-Path $root "igsolutions_repo"
-        $possibleRoots += Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
-                          ForEach-Object { Join-Path $_.FullName "igsolutions_repo" }
+    $results = [System.Collections.Generic.List[string]]::new()
+    $totalFiles = 0
+
+    $stack = [System.Collections.Generic.Stack[string]]::new()
+    $stack.Push($RootPath)
+
+    while ($stack.Count -gt 0) {
+        $currentDir = $stack.Pop()
+
+        try {
+            # Process directories first
+            $dirs = [System.IO.Directory]::GetDirectories($currentDir)
+            foreach ($dir in $dirs) {
+                if ($dir -notmatch $ExcludePattern) {
+                    $stack.Push($dir)
+                }
+            }
+
+            # Process files
+            $files = [System.IO.Directory]::GetFiles($currentDir)
+            foreach ($file in $files) {
+                $totalFiles++
+                if ($totalFiles % 1000 -eq 0) {
+                    Write-Progress -Activity "Finding files" -Status "Checked $totalFiles files, found $($results.Count)" -PercentComplete -1
+                }
+
+                # Check file size
+                $fileInfo = [System.IO.FileInfo]::new($file)
+                if ($fileInfo.Length -gt $MaxBytes) { continue }
+
+                # Check extension
+                $ext = $fileInfo.Extension.ToLower()
+                if (-not $ext -or -not $ExtensionHash.ContainsKey($ext)) { continue }
+
+                $results.Add($file)
+            }
+        }
+        catch {
+            # Skip inaccessible directories
+        }
     }
 
-    $RootPath = $possibleRoots | Where-Object { Test-Path $_ } | Select-Object -First 1
+    Write-Progress -Activity "Finding files" -Completed
+    return $results
+}
 
-    if ($RootPath) {
-        Write-Host "Found repository path: $RootPath" -ForegroundColor Green
-    } else {
-        Write-Host "Could not automatically locate 'igsolutions_repo'." -ForegroundColor Yellow
-        $RootPath = Read-Host "Enter the ROOT PATH manually (e.g., C:\Users\<username>\igsolutions_repo)"
+#endregion
+
+#region Auto-detect Repository Path
+
+if ([string]::IsNullOrWhiteSpace($RootPath)) {
+    Write-Host "Searching for 'igsolutions_repo'..." -ForegroundColor Cyan
+
+    $searchPaths = @(
+        (Join-Path $env:USERPROFILE "igsolutions_repo"),
+        (Join-Path $env:USERPROFILE "repo\igsolutions_repo")
+    )
+
+    foreach ($path in $searchPaths) {
+        if (Test-Path $path) {
+            $RootPath = $path
+            Write-Host "Found: $RootPath" -ForegroundColor Green
+            break
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($RootPath)) {
+        $RootPath = Read-Host "Enter repository path"
     }
 }
 
 if (-not (Test-Path $RootPath)) {
-    Write-Host "Invalid RootPath. Path not found: $RootPath" -ForegroundColor Red
+    Write-Host "ERROR: Path not found: $RootPath" -ForegroundColor Red
     exit 1
 }
+
+#endregion
+
+#region Mode Selection
+
+Write-SectionHeader "Select Search Mode"
+Write-Host "  [1] Name Mode     - Search for employee names and emails"
+Write-Host "  [2] String Mode   - Search for any string (case-insensitive)"
+Write-Host "  [3] Keys Mode     - Scan for exposed API keys and secrets"
+Write-Host "  [Q] Quit"
+Write-Host ""
 
 $mode = $null
 while (-not $mode) {
-  Write-Host ""
-  Write-Host "Select search mode:" -ForegroundColor Cyan
-  Write-Host "  [1] Name (First + Last)  -> grouped checks (Critical/Unknown Email/etc.)"
-  Write-Host "  [2] Single String        -> case-insensitive literal search only"
-  Write-Host "  [3] Secrets/Keys         -> heuristics for key material (+ optional exact string)"
-  Write-Host "  [Q] Quit"
-  $choice = Read-Host "Enter 1, 2, 3, or Q"
-
-  switch ($choice.Trim().ToUpper()) {
-    '1' { $mode = 'Name' }
-    '2' { $mode = 'String' }
-    '3' { $mode = 'Keys' }
-    'Q' { Write-Host "Exiting."; exit 0 }
-    default { Write-Host "Invalid choice. Please enter 1, 2, 3, or Q." -ForegroundColor Yellow }
-  }
-}
-
-# Collect user inputs BEFORE scanning files
-$firstInput = $null; $lastInput = $null; $alt = $null
-
-if ($mode -eq 'Name') {
-  $firstInput = Read-Host "Which FIRST name would you like to search for?"
-  $lastInput  = Read-Host "Which LAST name would you like to search for?"
-  if ([string]::IsNullOrWhiteSpace($firstInput) -or [string]::IsNullOrWhiteSpace($lastInput)) {
-    Write-Host "Both first and last names are required for Name mode." -ForegroundColor Red
-    exit 1
-  }
-} elseif ($mode -eq 'String') {
-  $alt = Read-Host "Enter a SINGLE string to search (case-insensitive)"
-  if ([string]::IsNullOrWhiteSpace($alt)) {
-    Write-Host "A non-empty string is required for String mode." -ForegroundColor Red
-    exit 1
-  }
-} else {
-  $alt = Read-Host "Optionally enter an exact key/token string to include (press Enter to skip)"
-}
-
-# NOW enumerate files after we have user input
-Write-Host ""
-Write-Host "Preparing to scan files..." -ForegroundColor Cyan
-
-$maxBytes = [Math]::Max(0, $MaxFileSizeMB) * 1MB
-
-if ([string]::IsNullOrWhiteSpace($Extensions)) {
-  $Extensions = '.ps1,.psm1,.psd1,.cs,.csproj,.vb,.sln,.ts,.tsx,.js,.jsx,.json,.html,.htm,.css,.scss,.md,.txt,.yml,.yaml,.xml,.config,.xaml,.sql,.sh,.bat,.cmd,.ini,.vue,.rs,.go,.py,.rb,.java,.kt'
-}
-$extArray = $Extensions.Split(',', [System.StringSplitOptions]::RemoveEmptyEntries) | ForEach-Object { $_.Trim() }
-$extHash = @{}; foreach ($e in $extArray) { $extHash[$e.ToLower()] = $true }
-
-# Build comprehensive skip pattern for performance
-# Note: Files are filtered after enumeration, but this prevents processing
-# files from package/build directories
-$skipDirsPattern = '\\(' + (
-  @(
-    # Package managers and dependencies
-    'node_modules','bower_components','jspm_packages','web_modules',
-    'vendor','vendors','third_party','3rdparty','packages',
-    'site-packages','dist-packages','__pypackages__',
-    'lib','libs','deps','dependencies',
-
-    # Version control
-    '\.git','\.github','\.gitlab','\.svn','\.hg','\.bzr',
-
-    # IDE and editors
-    '\.idea','\.vscode','\.vs','\.settings','\.eclipse',
-    '\.metadata','\.project','\.classpath',
-
-    # Build outputs
-    'bin','obj','dist','build','builds','out','output','target',
-    'release','debug','\.build','_build',
-
-    # Framework specific
-    '\.next','\.nuxt','\.angular','\.svelte-kit','\.docusaurus',
-    '\.cache','\.parcel-cache','\.webpack','\.rollup\.cache',
-    '\.turbo','\.vercel','\.netlify',
-
-    # Python
-    '\.venv','venv','\.tox','\.pytest_cache','__pycache__','\.mypy_cache',
-    '\.eggs','\.egg-info','\.Python',
-
-    # Infrastructure as Code
-    '\.terraform','\.terragrunt-cache','\.pulumi',
-
-    # Logs and temp
-    'logs','log','tmp','temp','temps','\.tmp','\.temp',
-    'coverage','\.coverage','\.nyc_output',
-
-    # OS specific
-    '\$RECYCLE\.BIN','System Volume Information','\.Trash',
-    '\.DS_Store','\.localized'
-  ) -join '|'
-) + ')(\\|$)'
-
-# Custom recursive file enumeration that SKIPS excluded directories
-# This is MUCH faster than Get-ChildItem -Recurse because we never enter
-# directories like node_modules, .git, etc.
-function Get-FilteredFilesRecursive {
-  param(
-    [string]$Path,
-    [hashtable]$ExtHash,
-    [long]$MaxBytes,
-    [string]$SkipPattern
-  )
-
-  # Use script scope to ensure the array is shared across nested function calls
-  $script:collectedFiles = [System.Collections.ArrayList]::new()
-  $script:fileCount = 0
-
-  function Traverse-Directory {
-    param([string]$dir)
-
-    try {
-      # Get directories first and filter them BEFORE recursing
-      $dirs = Get-ChildItem -Path $dir -Directory -Force -ErrorAction SilentlyContinue
-      foreach ($d in $dirs) {
-        # Skip if directory matches exclusion pattern
-        if ($d.FullName -match $SkipPattern) {
-          continue
-        }
-        # Recurse into this directory
-        Traverse-Directory $d.FullName
-      }
-
-      # Now get files in current directory
-      $currentFiles = Get-ChildItem -Path $dir -File -Force -ErrorAction SilentlyContinue
-      foreach ($f in $currentFiles) {
-        $script:fileCount++
-        if ($script:fileCount % 1000 -eq 0) {
-          Write-Progress -Activity "Enumerating files" -Status "Found $script:fileCount files..." -PercentComplete -1
-        }
-
-        # Skip files that are too large
-        if ($f.Length -gt $MaxBytes) { continue }
-
-        # Skip files without matching extensions
-        $ext = [System.IO.Path]::GetExtension($f.Name)
-        if ([string]::IsNullOrEmpty($ext)) { continue }
-        if (-not $ExtHash.ContainsKey($ext.ToLower())) { continue }
-
-        [void]$script:collectedFiles.Add($f.FullName)
-      }
+    $choice = Read-Host "Enter choice [1, 2, 3, Q]"
+    switch ($choice.Trim().ToUpper()) {
+        '1' { $mode = 'Name' }
+        '2' { $mode = 'String' }
+        '3' { $mode = 'Keys' }
+        'Q' { Write-Host "Exiting."; exit 0 }
+        default { Write-Host "Invalid choice. Try again." -ForegroundColor Yellow }
     }
-    catch {
-      # Silently skip directories we can't access
-    }
-  }
-
-  Traverse-Directory $Path
-  Write-Progress -Activity "Enumerating files" -Completed
-  return $script:collectedFiles.ToArray()
 }
 
-Write-Progress -Activity "Enumerating files" -Status "Starting scan..." -PercentComplete 0
-$allFiles = Get-FilteredFilesRecursive -Path $RootPath -ExtHash $extHash -MaxBytes $maxBytes -SkipPattern $skipDirsPattern
+#endregion
 
-if (-not $allFiles -or @($allFiles).Count -eq 0) {
-  Write-Host "No candidate files found to scan under $RootPath (after exclusions, size limit, and extension filter)." -ForegroundColor Yellow
-  exit 0
-}
+#region Input Collection
 
-Write-Host "Found $(@($allFiles).Count) files to scan" -ForegroundColor Green
-
-function Invoke-ChunkedSearch([scriptblock]$SearchBlock, [string[]]$Files, [string]$label) {
-  $batch = 500
-  $total = @($Files).Count
-  $results = @()
-  for ($i = 0; $i -lt $total; $i += $batch) {
-    $end = [Math]::Min($i + $batch, $total)
-    $slice = $Files[$i..($end-1)]
-    $pct = [int]([double]$end / [Math]::Max(1,$total) * 100)
-    Write-Progress -Activity $label -Status "Files $end of $total" -PercentComplete $pct
-    $r = & $SearchBlock $slice
-    if ($r) { $results += $r }
-  }
-  Write-Progress -Activity $label -Completed
-  return $results
-}
+$searchPatterns = @{}
+$firstName = $null
+$lastName = $null
+$searchString = $null
 
 if ($mode -eq 'String') {
-  Write-GroupHeader ("Case-insensitive search for: `"$alt`"") 'Yellow'
-  $block = { param($paths) Select-String -Path $paths -SimpleMatch $alt -AllMatches:$false -List -ErrorAction SilentlyContinue }
-  $matches = Invoke-ChunkedSearch $block $allFiles 'Scanning (String)'
-  if ($matches) {
-    $byPath = $matches | Group-Object Path
-    foreach ($g in $byPath) { Write-Host ("- " + $g.Name) }
-  } else {
-    Write-Host "- No matches found."
-  }
-  Write-Host ""; Write-Host "Search complete." -ForegroundColor Gray
-  exit 0
+    $searchString = Read-Host "Enter search string"
+    if ([string]::IsNullOrWhiteSpace($searchString)) {
+        Write-Host "ERROR: Search string cannot be empty" -ForegroundColor Red
+        exit 1
+    }
+    $searchString = $searchString.Trim()
+}
+elseif ($mode -eq 'Name') {
+    $firstName = (Read-Host "First name (or press Enter to skip)").Trim()
+    $lastName = (Read-Host "Last name (or press Enter to skip)").Trim()
+
+    if ([string]::IsNullOrWhiteSpace($firstName) -and [string]::IsNullOrWhiteSpace($lastName)) {
+        Write-Host "ERROR: Must provide at least first or last name" -ForegroundColor Red
+        exit 1
+    }
+
+    # Build patterns for name search
+    $username = $null
+    if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
+        $username = ($firstName.Substring(0, 1) + $lastName).ToLower()
+    }
+
+    # Critical patterns
+    if (-not [string]::IsNullOrWhiteSpace($firstName) -and -not [string]::IsNullOrWhiteSpace($lastName)) {
+        $fullNameProper = (Get-Culture).TextInfo.ToTitleCase($firstName.ToLower()) + " " + (Get-Culture).TextInfo.ToTitleCase($lastName.ToLower())
+        $searchPatterns['Critical_USER'] = @{
+            Pattern = [regex]::new("USER $($username.ToUpper())", [System.Text.RegularExpressions.RegexOptions]::Compiled)
+            Display = "USER $($username.ToUpper())"
+        }
+        $searchPatterns['Critical_FullName'] = @{
+            Pattern = [regex]::new([regex]::Escape($fullNameProper), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = $fullNameProper
+        }
+    }
+
+    # Email patterns
+    if ($username) {
+        $searchPatterns['Email_IGSolutions'] = @{
+            Pattern = [regex]::new([regex]::Escape("$username@igsolutions.com"), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = "$username@igsolutions.com"
+        }
+        $searchPatterns['Email_Intelliguard'] = @{
+            Pattern = [regex]::new([regex]::Escape("$username@intelliguardhealth.com"), [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = "$username@intelliguardhealth.com"
+        }
+        $searchPatterns['Email_Unknown'] = @{
+            Pattern = [regex]::new("\b$([regex]::Escape($username))@(?!(?:igsolutions\.com|intelliguardhealth\.com)\b)[a-z0-9.-]+\.[a-z]{2,}\b", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = "$username@<unknown-domain>"
+        }
+    }
+
+    # Warning patterns
+    if ($username) {
+        $searchPatterns['Warning_Username'] = @{
+            Pattern = [regex]::new("\b$([regex]::Escape($username))\b(?!@)", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = $username
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($firstName)) {
+        $searchPatterns['Warning_FirstName'] = @{
+            Pattern = [regex]::new("\s$([regex]::Escape($firstName))\s", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = $firstName
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($lastName)) {
+        $searchPatterns['Warning_LastName'] = @{
+            Pattern = [regex]::new("\s$([regex]::Escape($lastName))\s", [System.Text.RegularExpressions.RegexOptions]::Compiled -bor [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            Display = $lastName
+        }
+    }
+}
+elseif ($mode -eq 'Keys') {
+    $customKey = (Read-Host "Optional: Enter specific key to search for (or press Enter)").Trim()
+
+    $keyPatterns = @(
+        '(?<![A-Z0-9])(AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])',  # AWS Access Keys
+        'eyJ[A-Za-z0-9_-]+?\.[A-Za-z0-9_-]+?\.[A-Za-z0-9_-]+',  # JWT tokens
+        '(?i)(api[_-]?key|access[_-]?key|secret[_-]?key|token)\s*[:=]\s*[''"]?[A-Za-z0-9/\+\-_=]{20,}[''"]?'  # Generic keys
+    )
+
+    if ($customKey) {
+        $keyPatterns += [regex]::Escape($customKey)
+    }
+
+    $combinedPattern = '(' + ($keyPatterns -join '|') + ')'
+    $searchPatterns['Keys_Potential'] = @{
+        Pattern = [regex]::new($combinedPattern, [System.Text.RegularExpressions.RegexOptions]::Compiled)
+        Display = "Potential secrets/keys"
+    }
 }
 
-if ($mode -eq 'Keys') {
-  $regexes = @()
-  if (-not [string]::IsNullOrWhiteSpace($alt)) {
-    $regexes += [regex]::Escape($alt)
-  }
-  $regexes += '(?<![A-Z0-9])(AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])'
-  $regexes += '(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])'
-  $regexes += 'eyJ[A-Za-z0-9_-]+?\.[A-Za-z0-9_-]+?\.[A-Za-z0-9_-]+'
-  $regexes += '(?i)(access[-_ ]?key|secret[-_ ]?key|api[-_ ]?key|token)\s*[:=]\s*["\' + "'" + ']?[A-Za-z0-9/\+\-_=]{10,}["\' + "'" + ']?'
+#endregion
 
-  $aggregate = @()
-  foreach ($re in $regexes) {
-    $block = { param($paths) Select-String -Path $paths -Pattern $re -AllMatches:$false -List -ErrorAction SilentlyContinue }
-    $r = Invoke-ChunkedSearch $block $allFiles ("Scanning (Keys): $re")
-    if ($r) { $aggregate += $r }
-  }
-
-  Write-GroupHeader "Possible Secrets/Keys" 'Red'
-  if ($aggregate) {
-    $paths = $aggregate | Select-Object -ExpandProperty Path -Unique | Sort-Object
-    foreach ($p in $paths) { Write-Host ("  - " + $p) }
-  } else {
-    Write-Host "- No likely secrets found (based on heuristics)."
-  }
-  Write-Host ""; Write-Host "Scan complete." -ForegroundColor Gray
-  exit 0
-}
-
-$firstLower = $firstInput.Trim().ToLower()
-$lastLower  = $lastInput.Trim().ToLower()
-$firstProper = To-Proper $firstLower
-$lastProper  = To-Proper  $lastLower
-$usernameLower = ($firstLower.Substring(0,1) + $lastLower)
-$usernameUpper = $usernameLower.ToUpper()
-
-$phraseUser   = "USER $usernameUpper"
-$phraseProper = "$firstProper $lastProper"
-$phraseLower  = "$firstLower $lastLower"
-
-$patternIG_lc = [regex]::Escape("$usernameLower@igsolutions.com")
-$patternIG_uc = [regex]::Escape("$usernameUpper@igsolutions.com")
-$patternIH_lc = [regex]::Escape("$usernameLower@intelliguardhealth.com")
-$patternIH_uc = [regex]::Escape("$usernameUpper@intelliguardhealth.com")
-
-$re_unknown_email = '\b' + [regex]::Escape($usernameLower) + '@(?!' +
-                    '(?:intelliguardhealth\.com|igsolutions\.com)\b)' +
-                    '[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
-
-$re_FirstProper_spaced = '(?<=\s)' + [regex]::Escape($firstProper) + '(?=\s)'
-$re_FirstLower_spaced  = '(?<=\s)' + [regex]::Escape($firstLower)  + '(?=\s)'
-$re_LastProper_spaced  = '(?<=\s)' + [regex]::Escape($lastProper)  + '(?=\s)'
-$re_LastLower_spaced   = '(?<=\s)' + [regex]::Escape($lastLower)   + '(?=\s)'
-$re_user_not_at = '\b' + [regex]::Escape($usernameLower) + '(?!@)\b'
-
-$crit_USER   = Invoke-ChunkedSearch { param($p) Select-String -Path $p -SimpleMatch $phraseUser -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Critical: USER UPPER)'
-$crit_Proper = Invoke-ChunkedSearch { param($p) Select-String -Path $p -SimpleMatch $phraseProper -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Critical: Proper)'
-$crit_Lower  = Invoke-ChunkedSearch { param($p) Select-String -Path $p -SimpleMatch $phraseLower -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Critical: lower)'
-
-$ig_refs  = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $patternIG_lc -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (IG email lc)'
-$ig_refs2 = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $patternIG_uc -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (IG email UC)'
-$ih_refs  = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $patternIH_lc -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (IH email lc)'
-$ih_refs2 = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $patternIH_uc -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (IH email UC)'
-
-$unknownEmailMatches = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $re_unknown_email -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Unknown email)'
-
-$w_FirstProper = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $re_FirstProper_spaced -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Warn First Proper)'
-$w_FirstLower  = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $re_FirstLower_spaced -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Warn First lower)'
-$w_LastProper  = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $re_LastProper_spaced -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Warn Last Proper)'
-$w_LastLower   = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $re_LastLower_spaced -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Warn Last lower)'
-$w_user        = Invoke-ChunkedSearch { param($p) Select-String -Path $p -Pattern $re_user_not_at -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue } $allFiles 'Scanning (Warn user not @)'
-
-Write-GroupHeader "Critical Access" 'Red'
-if ($crit_USER)   { Write-Host ('- Instances of "' + $phraseUser   + '"'); Print-PathsFromMatches $crit_USER }
-if ($crit_Proper) { Write-Host ('- Instances of "' + $phraseProper + '"'); Print-PathsFromMatches $crit_Proper }
-if ($crit_Lower)  { Write-Host ('- Instances of "' + $phraseLower  + '"'); Print-PathsFromMatches $crit_Lower }
-
-Write-GroupHeader "Unknown Email" 'Red'
-if ($unknownEmailMatches -and @($unknownEmailMatches).Count -gt 0) {
-  $byPath = $unknownEmailMatches | Group-Object Path
-  foreach ($g in $byPath) { Write-Host ("- " + $g.Name) }
-}
-
-Write-GroupHeader "IG Solutions Reference" 'Blue'
-$igCombined = @()
-if ($ig_refs)  { $igCombined += $ig_refs }
-if ($ig_refs2) { $igCombined += $ig_refs2 }
-if (@($igCombined).Count -gt 0) {
-  Write-Host ('- Instances of "' + $usernameLower + '@igsolutions.com"')
-  Print-PathsFromMatches $igCombined
-}
-
-Write-GroupHeader "Intelliguard Reference" 'Blue'
-$ihCombined = @()
-if ($ih_refs)  { $ihCombined += $ih_refs }
-if ($ih_refs2) { $ihCombined += $ih_refs2 }
-if (@($ihCombined).Count -gt 0) {
-  Write-Host ('- Instances of "' + $usernameLower + '@intelliguardhealth.com"')
-  Print-PathsFromMatches $ihCombined
-}
-
-Write-GroupHeader "Warning" 'Yellow'
-if ($w_FirstProper) { Write-Host ('- Instances of "' + $firstProper + '" (capitalized), preceded by a space and followed by a space.'); Print-PathsFromMatches $w_FirstProper }
-if ($w_FirstLower)  { Write-Host ('- Instances of "' + $firstLower  + '" (lowercase), preceded by a space and followed by a space.');  Print-PathsFromMatches $w_FirstLower  }
-if ($w_LastProper)  { Write-Host ('- Instances of "' + $lastProper  + '", preceded by a space and followed by a space.');               Print-PathsFromMatches $w_LastProper  }
-if ($w_LastLower)   { Write-Host ('- Instances of "' + $lastLower   + '", preceded by a space and followed by a space.');               Print-PathsFromMatches $w_LastLower   }
-if ($w_user)        { Write-Host ('- Instances of "' + $usernameLower + '" that are NOT followed by an "@".');                          Print-PathsFromMatches $w_user        }
+#region File Enumeration
 
 Write-Host ""
-Write-Host ("Search complete for: {0} {1}  (username: {2})" -f $firstProper, $lastProper, $usernameLower) -ForegroundColor Gray
+Write-Host "Preparing to scan..." -ForegroundColor Cyan
+
+$maxBytes = [Math]::Max(1, $MaxFileSizeMB) * 1MB
+
+if ([string]::IsNullOrWhiteSpace($Extensions)) {
+    $Extensions = '.ps1,.psm1,.psd1,.cs,.csproj,.vb,.sln,.ts,.tsx,.js,.jsx,.json,.html,.css,.scss,.md,.txt,.yml,.yaml,.xml,.config,.sql,.sh,.bat,.cmd'
+}
+
+$extHash = @{}
+$Extensions.Split(',') | ForEach-Object {
+    $ext = $_.Trim().ToLower()
+    if ($ext -and -not $ext.StartsWith('.')) { $ext = ".$ext" }
+    if ($ext) { $extHash[$ext] = $true }
+}
+
+$excludePattern = Get-ExcludedDirectoriesPattern
+$targetFiles = Get-TargetFiles -RootPath $RootPath -ExtensionHash $extHash -MaxBytes $maxBytes -ExcludePattern $excludePattern
+
+if ($targetFiles.Count -eq 0) {
+    Write-Host "No files found to scan" -ForegroundColor Yellow
+    exit 0
+}
+
+Write-Host "Found $($targetFiles.Count) files to scan" -ForegroundColor Green
+
+#endregion
+
+#region Single-Pass Scanning
+
+Write-Host ""
+Write-Host "Scanning files..." -ForegroundColor Cyan
+
+# Results dictionary: PatternKey -> List of file paths
+$results = @{}
+foreach ($key in $searchPatterns.Keys) {
+    $results[$key] = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+}
+
+$filesProcessed = 0
+$startTime = Get-Date
+
+foreach ($file in $targetFiles) {
+    $filesProcessed++
+
+    if ($filesProcessed % 100 -eq 0 -or $filesProcessed -eq $targetFiles.Count) {
+        $elapsed = (Get-Date) - $startTime
+        $rate = if ($elapsed.TotalSeconds -gt 0) { [int]($filesProcessed / $elapsed.TotalSeconds) } else { 0 }
+        $pct = [int](($filesProcessed / $targetFiles.Count) * 100)
+        Write-Progress -Activity "Scanning files" -Status "$filesProcessed of $($targetFiles.Count) ($rate files/sec)" -PercentComplete $pct
+    }
+
+    try {
+        # Read file content once
+        $content = $null
+
+        if ($mode -eq 'String') {
+            # For string mode, use simple case-insensitive search
+            $content = [System.IO.File]::ReadAllText($file)
+            if ($content -match [regex]::Escape($searchString)) {
+                if (-not $results.ContainsKey('StringMatch')) {
+                    $results['StringMatch'] = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+                }
+                [void]$results['StringMatch'].Add($file)
+            }
+        }
+        else {
+            # For name and keys mode, check all patterns
+            $content = [System.IO.File]::ReadAllText($file)
+
+            foreach ($key in $searchPatterns.Keys) {
+                if ($searchPatterns[$key].Pattern.IsMatch($content)) {
+                    [void]$results[$key].Add($file)
+                }
+            }
+        }
+    }
+    catch {
+        # Skip files that can't be read
+    }
+}
+
+Write-Progress -Activity "Scanning files" -Completed
+
+$elapsed = (Get-Date) - $startTime
+Write-Host "Scan completed in $([int]$elapsed.TotalSeconds) seconds" -ForegroundColor Green
+
+#endregion
+
+#region Display Results
+
+Write-Host ""
+Write-Host "=" * 80 -ForegroundColor Cyan
+Write-Host "SCAN RESULTS" -ForegroundColor Cyan
+Write-Host "=" * 80 -ForegroundColor Cyan
+
+if ($mode -eq 'String') {
+    Write-SectionHeader "String Match: `"$searchString`"" 'Yellow'
+    if ($results.ContainsKey('StringMatch') -and $results['StringMatch'].Count -gt 0) {
+        $results['StringMatch'] | Sort-Object | ForEach-Object { Write-Host "  $_" }
+    }
+    else {
+        Write-Host "  No matches found" -ForegroundColor Gray
+    }
+}
+elseif ($mode -eq 'Name') {
+    # Critical findings
+    Write-SectionHeader "CRITICAL FINDINGS" 'Red'
+    $criticalFound = $false
+    foreach ($key in ($results.Keys | Where-Object { $_ -like 'Critical_*' } | Sort-Object)) {
+        if ($results[$key].Count -gt 0) {
+            $criticalFound = $true
+            Write-Host "  Pattern: $($searchPatterns[$key].Display)" -ForegroundColor Yellow
+            $results[$key] | Sort-Object | ForEach-Object { Write-Host "    $_" }
+        }
+    }
+    if (-not $criticalFound) {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
+
+    # Email findings
+    Write-SectionHeader "IG SOLUTIONS EMAIL" 'Blue'
+    if ($results.ContainsKey('Email_IGSolutions') -and $results['Email_IGSolutions'].Count -gt 0) {
+        Write-Host "  Pattern: $($searchPatterns['Email_IGSolutions'].Display)" -ForegroundColor Yellow
+        $results['Email_IGSolutions'] | Sort-Object | ForEach-Object { Write-Host "    $_" }
+    }
+    else {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
+
+    Write-SectionHeader "INTELLIGUARD HEALTH EMAIL" 'Blue'
+    if ($results.ContainsKey('Email_Intelliguard') -and $results['Email_Intelliguard'].Count -gt 0) {
+        Write-Host "  Pattern: $($searchPatterns['Email_Intelliguard'].Display)" -ForegroundColor Yellow
+        $results['Email_Intelliguard'] | Sort-Object | ForEach-Object { Write-Host "    $_" }
+    }
+    else {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
+
+    Write-SectionHeader "UNKNOWN EMAIL DOMAINS" 'Red'
+    if ($results.ContainsKey('Email_Unknown') -and $results['Email_Unknown'].Count -gt 0) {
+        Write-Host "  Pattern: $($searchPatterns['Email_Unknown'].Display)" -ForegroundColor Yellow
+        $results['Email_Unknown'] | Sort-Object | ForEach-Object { Write-Host "    $_" }
+    }
+    else {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
+
+    # Warnings
+    Write-SectionHeader "WARNINGS" 'Yellow'
+    $warningFound = $false
+    foreach ($key in ($results.Keys | Where-Object { $_ -like 'Warning_*' } | Sort-Object)) {
+        if ($results[$key].Count -gt 0) {
+            $warningFound = $true
+            Write-Host "  Pattern: $($searchPatterns[$key].Display)" -ForegroundColor Yellow
+            $results[$key] | Sort-Object | ForEach-Object { Write-Host "    $_" }
+        }
+    }
+    if (-not $warningFound) {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
+}
+elseif ($mode -eq 'Keys') {
+    Write-SectionHeader "POTENTIAL SECRETS/KEYS" 'Red'
+    if ($results.ContainsKey('Keys_Potential') -and $results['Keys_Potential'].Count -gt 0) {
+        $results['Keys_Potential'] | Sort-Object | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+        Write-Host ""
+        Write-Host "  WARNING: Review these files manually for false positives" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "  None found" -ForegroundColor Gray
+    }
+}
+
+Write-Host ""
+Write-Host "=" * 80 -ForegroundColor Cyan
+Write-Host "Scanned $($targetFiles.Count) files" -ForegroundColor Cyan
+Write-Host "=" * 80 -ForegroundColor Cyan
+Write-Host ""
+
+#endregion
