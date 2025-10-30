@@ -180,7 +180,8 @@ function Get-FilteredFilesRecursive {
     [string]$SkipPattern
   )
 
-  $files = @()
+  # Use script scope to ensure the array is shared across nested function calls
+  $script:collectedFiles = [System.Collections.ArrayList]::new()
   $script:fileCount = 0
 
   function Traverse-Directory {
@@ -214,7 +215,7 @@ function Get-FilteredFilesRecursive {
         if ([string]::IsNullOrEmpty($ext)) { continue }
         if (-not $ExtHash.ContainsKey($ext.ToLower())) { continue }
 
-        $files += $f.FullName
+        [void]$script:collectedFiles.Add($f.FullName)
       }
     }
     catch {
@@ -224,7 +225,7 @@ function Get-FilteredFilesRecursive {
 
   Traverse-Directory $Path
   Write-Progress -Activity "Enumerating files" -Completed
-  return $files
+  return $script:collectedFiles.ToArray()
 }
 
 Write-Progress -Activity "Enumerating files" -Status "Starting scan..." -PercentComplete 0
