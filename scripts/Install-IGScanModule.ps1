@@ -151,9 +151,81 @@ if ($commands) {
     }
 }
 
+# Setup alias persistence in PowerShell profile
+Write-Host ""
+Write-Host "Setting up alias persistence..." -ForegroundColor Cyan
+
+# Function to get the correct PowerShell profile path
+function Get-PowerShellProfilePath {
+    # Prefer AllHosts profile for compatibility across all PowerShell hosts (Console, ISE, VS Code)
+    $allHostsProfile = $PROFILE.CurrentUserAllHosts
+    $currentHostProfile = $PROFILE.CurrentUserCurrentHost
+
+    if (Test-Path -Path $allHostsProfile -PathType Leaf) {
+        Write-Host "  Using existing profile: CurrentUserAllHosts" -ForegroundColor Gray
+        return $allHostsProfile
+    }
+    elseif (Test-Path -Path $currentHostProfile -PathType Leaf) {
+        Write-Host "  Using existing profile: CurrentUserCurrentHost" -ForegroundColor Gray
+        return $currentHostProfile
+    }
+    else {
+        Write-Host "  Creating new profile: CurrentUserAllHosts" -ForegroundColor Gray
+        return $allHostsProfile
+    }
+}
+
+$profilePath = Get-PowerShellProfilePath
+Write-Host "  Profile path: $profilePath" -ForegroundColor Gray
+
+# Ensure profile directory exists
+$profileDir = Split-Path -Parent $profilePath
+if (-not (Test-Path $profileDir)) {
+    New-Item -Path $profileDir -ItemType Directory -Force | Out-Null
+}
+
+# Check if profile already has the import statement
+$importStatement = "Import-Module IGScan -ErrorAction SilentlyContinue"
+$profileContent = ""
+$needsUpdate = $true
+
+if (Test-Path $profilePath) {
+    $profileContent = Get-Content -Path $profilePath -Raw -ErrorAction SilentlyContinue
+    if ($profileContent -match [regex]::Escape($importStatement)) {
+        Write-Host "  Profile already configured for IGScan" -ForegroundColor Green
+        $needsUpdate = $false
+    }
+}
+
+# Add import statement to profile if needed
+if ($needsUpdate) {
+    try {
+        $newContent = if ($profileContent) {
+            # Add to existing profile with newline
+            $profileContent.TrimEnd() + "`n`n# IGScan Module`n$importStatement`n"
+        }
+        else {
+            # Create new profile
+            "# IGScan Module`n$importStatement`n"
+        }
+
+        Set-Content -Path $profilePath -Value $newContent -Encoding UTF8 -ErrorAction Stop
+        Write-Host "  Added IGScan import to profile" -ForegroundColor Green
+        Write-Host "  The 'igscan' alias will be available in all new PowerShell sessions" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  WARNING: Could not update profile" -ForegroundColor Yellow
+        Write-Host "  Error: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  You can manually add this line to your profile:" -ForegroundColor Yellow
+        Write-Host "    $importStatement" -ForegroundColor Gray
+    }
+}
+
 Write-Host ""
 Write-Host "=== Installation Complete ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "Usage: igscan" -ForegroundColor Cyan
 Write-Host "   or: Invoke-EmployeeRefScan -RootPath 'C:\path\to\repo'" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "The 'igscan' alias is now available and will persist across sessions." -ForegroundColor Gray
 Write-Host ""
