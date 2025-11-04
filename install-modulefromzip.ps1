@@ -685,8 +685,21 @@ function Expand-ZipToModule {
 
     $destinationPath = Join-Path $destinationRoot $ModuleName
 
-    # Handle existing installation
+    # Handle existing installation (case-insensitive check for Windows)
+    # This handles cases where module was installed with different casing (e.g., "igscan" vs "IGScan")
+    $existingModulePath = $null
     if (Test-Path -Path $destinationPath) {
+        # Get the actual path with its current casing
+        $existingModulePath = (Get-Item -Path $destinationPath -ErrorAction SilentlyContinue).FullName
+
+        if ($null -ne $existingModulePath) {
+            $actualFolderName = Split-Path -Path $existingModulePath -Leaf
+
+            if ($actualFolderName -cne $ModuleName) {
+                Write-InfoMessage "Found existing module with different casing: '$actualFolderName' (will update to '$ModuleName')"
+            }
+        }
+
         if ($CreateBackup) {
             $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
             $backupName = "{0}.__backup__{1}" -f $ModuleName, $timestamp
