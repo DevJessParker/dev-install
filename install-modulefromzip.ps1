@@ -684,13 +684,119 @@ function Get-UserDocumentsPath {
     }
 }
 
+function Get-ModuleInstallationPath {
+    <#
+    .SYNOPSIS
+        Intelligently discovers the best module installation path based on scope and existing installations.
+
+    .DESCRIPTION
+        Uses PowerShell's $env:PSModulePath to find valid module locations, then:
+        1. Checks if module already exists in any PSModulePath location
+        2. Returns existing location if found (preserves installation location)
+        3. Otherwise, returns the appropriate default path for the scope
+        4. Handles OneDrive redirects, custom paths, and multiple module locations
+
+    .PARAMETER ModuleName
+        Name of the module to find or install.
+
+    .PARAMETER Scope
+        Installation scope: CurrentUser or AllUsers.
+
+    .OUTPUTS
+        [PSCustomObject] with properties:
+        - InstallPath: Full path where module should be installed
+        - IsExisting: $true if module already exists at this location
+        - RootPath: The module root directory (without module name)
+
+    .EXAMPLE
+        Get-ModuleInstallationPath -ModuleName "IGScan" -Scope "CurrentUser"
+        Returns the best installation path for IGScan module
+    #>
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$ModuleName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('CurrentUser', 'AllUsers')]
+        [string]$Scope
+    )
+
+    # Get all module paths from PSModulePath
+    $allModulePaths = $env:PSModulePath -split [IO.Path]::PathSeparator | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    Write-DebugLog "PSModulePath contains $($allModulePaths.Count) paths"
+
+    # Check if module already exists in any PSModulePath location
+    $existingModule = Get-Module -ListAvailable -Name $ModuleName -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending |
+        Select-Object -First 1
+
+    if ($null -ne $existingModule) {
+        $existingPath = $existingModule.ModuleBase
+        $existingRoot = Split-Path -Path $existingPath -Parent
+
+        Write-InfoMessage "Found existing module installation: $existingPath"
+        Write-DebugLog "Existing module root: $existingRoot"
+
+        return [PSCustomObject]@{
+            InstallPath = $existingPath
+            IsExisting  = $true
+            RootPath    = $existingRoot
+        }
+    }
+
+    # Module doesn't exist - determine best installation path based on scope
+    Write-DebugLog "Module not found, determining installation path for scope: $Scope"
+
+    if ($Scope -eq 'AllUsers') {
+        # AllUsers: Use Program Files location
+        $targetRoot = $allModulePaths | Where-Object {
+            $_ -like "*Program Files*WindowsPowerShell\Modules*"
+        } | Select-Object -First 1
+
+        if ($null -eq $targetRoot) {
+            # Fallback if not in PSModulePath
+            $targetRoot = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
+            Write-DebugLog "AllUsers path not in PSModulePath, using fallback: $targetRoot"
+        }
+    }
+    else {
+        # CurrentUser: Find user-specific path from PSModulePath
+        $targetRoot = $allModulePaths | Where-Object {
+            ($_ -like "*$env:USERPROFILE*") -and ($_ -like "*WindowsPowerShell\Modules*")
+        } | Select-Object -First 1
+
+        if ($null -eq $targetRoot) {
+            # Fallback: Use Documents folder (with OneDrive redirect support)
+            $documentsPath = Get-UserDocumentsPath
+            $targetRoot = Join-Path $documentsPath 'WindowsPowerShell\Modules'
+            Write-DebugLog "CurrentUser path not in PSModulePath, using fallback: $targetRoot"
+        }
+    }
+
+    Write-InfoMessage "Module installation directory: $targetRoot"
+
+    $installPath = Join-Path $targetRoot $ModuleName
+
+    return [PSCustomObject]@{
+        InstallPath = $installPath
+        IsExisting  = $false
+        RootPath    = $targetRoot
+    }
+}
+
 function Expand-ZipToModule {
     <#
     .SYNOPSIS
-        Extracts ZIP file to module installation directory.
+        Extracts ZIP file to module installation directory with intelligent path discovery.
 
     .DESCRIPTION
         Handles:
+        - Intelligent path discovery using $env:PSModulePath
+        - Preserves existing module installation locations
         - Scope-based destination selection (CurrentUser vs AllUsers)
         - OneDrive Documents folder redirects
         - Backup of existing installations
@@ -731,24 +837,20 @@ function Expand-ZipToModule {
         [switch]$CreateBackup
     )
 
-    # Determine destination root based on scope
-    if ($InstallScope -eq 'AllUsers') {
-        $destinationRoot = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
-    }
-    else {
-        # Get actual Documents path (respects OneDrive redirects)
-        $documentsPath = Get-UserDocumentsPath
-        $destinationRoot = Join-Path $documentsPath 'WindowsPowerShell\Modules'
-        Write-DebugLog "Using module installation path: $destinationRoot"
-    }
+    # Intelligently discover installation path using PSModulePath
+    $pathInfo = Get-ModuleInstallationPath -ModuleName $ModuleName -Scope $InstallScope
+
+    $destinationRoot = $pathInfo.RootPath
+    $destinationPath = $pathInfo.InstallPath
+
+    Write-DebugLog "Target installation path: $destinationPath"
+    Write-DebugLog "Module root directory: $destinationRoot"
 
     # Ensure destination root exists
     if (-not (Test-Path -Path $destinationRoot -PathType Container)) {
         Write-DebugLog "Creating module directory: $destinationRoot"
         New-Item -Path $destinationRoot -ItemType Directory -Force | Out-Null
     }
-
-    $destinationPath = Join-Path $destinationRoot $ModuleName
 
     # Handle existing installation (case-insensitive check for Windows)
     # This handles cases where module was installed with different casing (e.g., "igscan" vs "IGScan")
