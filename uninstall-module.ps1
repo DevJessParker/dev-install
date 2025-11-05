@@ -113,6 +113,7 @@ function Get-AllModuleInstallations {
     <#
     .SYNOPSIS
         Finds all installations of a module across all PSModulePath locations.
+        Detects case mismatches and reports actual folder names on disk.
     #>
     param([string]$ModuleName)
 
@@ -126,27 +127,35 @@ function Get-AllModuleInstallations {
 
     foreach ($basePath in $modulePaths) {
         if (Test-Path $basePath) {
-            # Look for exact module name (case-insensitive)
+            # Look for module (case-insensitive search)
             $modulePath = Join-Path $basePath $ModuleName
 
             if (Test-Path $modulePath) {
-                $installations += [PSCustomObject]@{
-                    Path     = $modulePath
-                    BasePath = $basePath
-                    Exists   = $true
-                }
-            }
+                # Get the ACTUAL item to see real folder name on disk
+                $actualItem = Get-Item -Path $modulePath -ErrorAction SilentlyContinue
 
-            # Also check for case variations
-            Get-ChildItem -Path $basePath -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -ieq $ModuleName -and $_.FullName -ne $modulePath } |
-                ForEach-Object {
+                if ($null -ne $actualItem) {
+                    $actualFolderName = $actualItem.Name
+                    $actualFullPath = $actualItem.FullName
+
+                    # Check for case mismatch
+                    $hasCaseMismatch = $actualFolderName -cne $ModuleName
+
                     $installations += [PSCustomObject]@{
-                        Path     = $_.FullName
-                        BasePath = $basePath
-                        Exists   = $true
+                        Path              = $actualFullPath
+                        BasePath          = $basePath
+                        Exists            = $true
+                        ActualName        = $actualFolderName
+                        ExpectedName      = $ModuleName
+                        HasCaseMismatch   = $hasCaseMismatch
+                    }
+
+                    if ($hasCaseMismatch) {
+                        Write-StatusMessage "Case mismatch detected: Expected '$ModuleName', found '$actualFolderName'" -Type Warning
+                        Write-Host "  Location: $actualFullPath" -ForegroundColor Yellow
                     }
                 }
+            }
         }
     }
 
@@ -285,7 +294,13 @@ $installations = Get-AllModuleInstallations -ModuleName $actualModuleName
 if ($installations.Count -gt 0) {
     Write-StatusMessage "Found $($installations.Count) module installation(s):" -Type Info
     foreach ($install in $installations) {
-        Write-Host "  - $($install.Path)" -ForegroundColor Gray
+        if ($install.HasCaseMismatch) {
+            Write-Host "  - $($install.Path) " -ForegroundColor Gray -NoNewline
+            Write-Host "[Incorrect casing: '$($install.ActualName)']" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "  - $($install.Path)" -ForegroundColor Gray
+        }
     }
     $foundItems.InstalledModule = $true
 }
@@ -296,7 +311,13 @@ if ($actualModuleName -ne $ModuleName) {
     if ($altInstallations.Count -gt 0) {
         Write-StatusMessage "Also found installations with original name '$ModuleName':" -Type Info
         foreach ($install in $altInstallations) {
-            Write-Host "  - $($install.Path)" -ForegroundColor Gray
+            if ($install.HasCaseMismatch) {
+                Write-Host "  - $($install.Path) " -ForegroundColor Gray -NoNewline
+                Write-Host "[Incorrect casing: '$($install.ActualName)']" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "  - $($install.Path)" -ForegroundColor Gray
+            }
         }
         $installations += $altInstallations
         $foundItems.InstalledModule = $true
@@ -454,6 +475,15 @@ if ($removalSuccess) {
     Write-Host "================================================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-StatusMessage "Successfully removed: $ModuleName" -Type Success
+
+    # Check if any installations had case mismatches
+    $hadCaseMismatch = $installations | Where-Object { $_.HasCaseMismatch } | Select-Object -First 1
+
+    if ($null -ne $hadCaseMismatch) {
+        Write-Host ""
+        Write-Host "NOTE: Incorrect module folder casing was detected and removed" -ForegroundColor Cyan
+        Write-Host "      When reinstalling, use the install script to ensure proper naming" -ForegroundColor Cyan
+    }
 
     if ($foundItems.ProfileAlias -and -not $KeepProfile) {
         Write-Host ""
