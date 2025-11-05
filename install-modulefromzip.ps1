@@ -301,7 +301,7 @@ function Write-ErrorMessage {
 function Normalize-ModuleName {
     <#
     .SYNOPSIS
-        Normalizes module name input to standard IG<task> format.
+        Normalizes module name input to standard IG<task> format with proper casing.
 
     .DESCRIPTION
         Handles various input formats and edge cases:
@@ -310,6 +310,7 @@ function Normalize-ModuleName {
         - Removes _Module, -Module, " Module" suffixes
         - Filters non-ASCII control characters
         - Validates IG prefix (case-insensitive) followed by alphanumerics
+        - Enforces proper casing: "IG" + capitalized first letter (e.g., "igscan" -> "IGScan")
 
     .PARAMETER InputName
         Raw module name input from user or parameter.
@@ -319,6 +320,10 @@ function Normalize-ModuleName {
 
     .EXAMPLE
         Normalize-ModuleName '"IGScan_Module.zip"'
+        Returns: IGScan
+
+    .EXAMPLE
+        Normalize-ModuleName 'igscan'
         Returns: IGScan
     #>
     [CmdletBinding()]
@@ -369,8 +374,22 @@ function Normalize-ModuleName {
 
     Write-DebugLog "Normalize-ModuleName: '$InputName' -> '$normalized'"
 
-    # Step 6: Validate format (IG prefix + alphanumerics)
-    if ($normalized -match '^(?i:IG)[A-Za-z0-9]+$') {
+    # Step 6: Validate format (IG prefix + alphanumerics) and enforce proper casing
+    if ($normalized -match '^(?i:IG)([A-Za-z0-9]+)$') {
+        # Extract the part after "IG" (case-insensitive match)
+        $taskName = $normalized.Substring(2)
+
+        # Enforce proper casing: "IG" + capitalize first letter of task name
+        if ($taskName.Length -gt 0) {
+            $firstChar = $taskName.Substring(0, 1).ToUpper()
+            $restOfName = $taskName.Substring(1)
+            $normalized = "IG$firstChar$restOfName"
+        }
+        else {
+            $normalized = "IG"
+        }
+
+        Write-DebugLog "Normalize-ModuleName: Final normalized name with proper casing: '$normalized'"
         return $normalized
     }
 
