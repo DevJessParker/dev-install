@@ -37,7 +37,7 @@
     Requires: PowerShell 5.1+
 #>
 
-[CmdletBinding(SupportsShouldProcess)]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $false, Position = 0)]
     [string]$ModuleName,
