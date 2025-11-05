@@ -642,6 +642,48 @@ function Get-ZipModuleVersion {
     }
 }
 
+function Get-UserDocumentsPath {
+    <#
+    .SYNOPSIS
+        Gets the actual user Documents folder path, respecting OneDrive redirects.
+
+    .DESCRIPTION
+        Windows can redirect the Documents folder to OneDrive or other locations.
+        This function uses .NET's GetFolderPath which respects these redirections,
+        unlike simply using $env:USERPROFILE\Documents.
+
+    .OUTPUTS
+        [string] Full path to user's Documents folder.
+
+    .EXAMPLE
+        Get-UserDocumentsPath
+        Returns: C:\Users\username\OneDrive - Company\Documents (if OneDrive redirect exists)
+        Returns: C:\Users\username\Documents (if no redirect)
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+
+    try {
+        # Use .NET method which respects folder redirections
+        $documentsPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+
+        if ([string]::IsNullOrWhiteSpace($documentsPath)) {
+            # Fallback to USERPROFILE if GetFolderPath fails
+            Write-DebugLog "GetFolderPath returned null, using fallback"
+            $documentsPath = Join-Path $env:USERPROFILE 'Documents'
+        }
+
+        Write-DebugLog "Resolved Documents path: $documentsPath"
+        return $documentsPath
+    }
+    catch {
+        Write-DebugLog "Error resolving Documents path: $($_.Exception.Message)"
+        # Final fallback
+        return Join-Path $env:USERPROFILE 'Documents'
+    }
+}
+
 function Expand-ZipToModule {
     <#
     .SYNOPSIS
@@ -650,6 +692,7 @@ function Expand-ZipToModule {
     .DESCRIPTION
         Handles:
         - Scope-based destination selection (CurrentUser vs AllUsers)
+        - OneDrive Documents folder redirects
         - Backup of existing installations
         - File unblocking for security
         - Folder name normalization
@@ -693,7 +736,10 @@ function Expand-ZipToModule {
         $destinationRoot = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'
     }
     else {
-        $destinationRoot = Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'
+        # Get actual Documents path (respects OneDrive redirects)
+        $documentsPath = Get-UserDocumentsPath
+        $destinationRoot = Join-Path $documentsPath 'WindowsPowerShell\Modules'
+        Write-DebugLog "Using module installation path: $destinationRoot"
     }
 
     # Ensure destination root exists
