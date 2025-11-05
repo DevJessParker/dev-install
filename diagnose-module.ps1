@@ -41,9 +41,9 @@ function Write-DiagnosticMessage {
 
     $prefix = switch ($Type) {
         'Info'    { '[INFO] ' }
-        'Success' { '[✓]    ' }
+        'Success' { '[OK]   ' }
         'Warning' { '[!]    ' }
-        'Error'   { '[✗]    ' }
+        'Error'   { '[X]    ' }
         'Section' { '' }
     }
 
@@ -82,9 +82,9 @@ $recommendations = @()
 # Test 1: Check if Get-Module can see it
 # ============================================================================
 
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-DiagnosticMessage "Test 1: PowerShell Module Discovery" -Type Section
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""
 
 $moduleAvailable = Get-Module -ListAvailable -Name $ModuleName -ErrorAction SilentlyContinue
@@ -108,9 +108,9 @@ Write-Host ""
 # Test 2: Search for module files on disk
 # ============================================================================
 
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-DiagnosticMessage "Test 2: Module Files on Disk" -Type Section
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""
 
 $modulePaths = $env:PSModulePath -split [IO.Path]::PathSeparator | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
@@ -173,9 +173,9 @@ Write-Host ""
 # ============================================================================
 
 if ($foundLocations.Count -gt 0) {
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
     Write-DiagnosticMessage "Test 3: Module Structure Validation" -Type Section
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host ""
 
     foreach ($location in $foundLocations) {
@@ -248,9 +248,9 @@ if ($foundLocations.Count -gt 0) {
 # Test 4: Check PSModulePath
 # ============================================================================
 
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-DiagnosticMessage "Test 4: PSModulePath Configuration" -Type Section
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""
 
 Write-DiagnosticMessage "PSModulePath contains $($modulePaths.Count) directories:" -Type Info
@@ -259,10 +259,10 @@ Write-Host ""
 foreach ($path in $modulePaths) {
     $exists = Test-Path $path
     if ($exists) {
-        Write-Host "  [✓] $path" -ForegroundColor Green
+        Write-Host "  [OK] $path" -ForegroundColor Green
     }
     else {
-        Write-Host "  [✗] $path (doesn't exist)" -ForegroundColor Red
+        Write-Host "  [X]  $path (doesn't exist)" -ForegroundColor Red
     }
 }
 
@@ -290,9 +290,9 @@ if ($foundLocations.Count -gt 0) {
 # ============================================================================
 
 if ($foundLocations.Count -gt 0) {
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
     Write-DiagnosticMessage "Test 5: Module Import Test" -Type Section
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+    Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host ""
 
     try {
@@ -326,9 +326,9 @@ if ($foundLocations.Count -gt 0) {
 # Summary and Recommendations
 # ============================================================================
 
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-DiagnosticMessage "DIAGNOSIS SUMMARY" -Type Section
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
+Write-Host "------------------------------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host ""
 
 if ($issues.Count -eq 0) {
@@ -338,7 +338,7 @@ else {
     Write-Host "Issues Detected:" -ForegroundColor Red
     Write-Host ""
     foreach ($issue in $issues) {
-        Write-Host "  • $issue" -ForegroundColor Yellow
+        Write-Host "  - $issue" -ForegroundColor Yellow
     }
 }
 
@@ -347,13 +347,13 @@ if ($recommendations.Count -gt 0) {
     Write-Host "Recommendations:" -ForegroundColor Cyan
     Write-Host ""
     foreach ($rec in $recommendations) {
-        Write-Host "  → $rec" -ForegroundColor White
+        Write-Host "  > $rec" -ForegroundColor White
     }
 }
 
 Write-Host ""
 Write-Host "Additional Troubleshooting:" -ForegroundColor Cyan
-Write-Host "  • Close and reopen PowerShell to refresh module cache" -ForegroundColor Gray
-Write-Host "  • Run: Get-Module -ListAvailable -Refresh" -ForegroundColor Gray
-Write-Host "  • Check for typos in module name" -ForegroundColor Gray
+Write-Host "  - Close and reopen PowerShell to refresh module cache" -ForegroundColor Gray
+Write-Host "  - Run: Get-Module -ListAvailable -Refresh" -ForegroundColor Gray
+Write-Host "  - Check for typos in module name" -ForegroundColor Gray
 Write-Host ""
