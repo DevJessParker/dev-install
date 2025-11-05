@@ -280,12 +280,24 @@ Write-Host ""
 
 $modulePaths = $env:PSModulePath -split [IO.Path]::PathSeparator | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 
-Write-DiagnosticMessage "Searching $($modulePaths.Count) module directories..." -Type Info
+# Add common module directories that might not be in PSModulePath
+$additionalPaths = @(
+    # Local Documents folder (not OneDrive-redirected)
+    "$env:USERPROFILE\Documents\WindowsPowerShell\Modules"
+    # Program Files
+    "$env:ProgramFiles\WindowsPowerShell\Modules"
+)
+
+# Combine and deduplicate paths
+$allSearchPaths = @($modulePaths) + @($additionalPaths) | Select-Object -Unique
+
+Write-DiagnosticMessage "Searching $($modulePaths.Count) PSModulePath directories + additional common locations..." -Type Info
 Write-Host ""
 
 $foundLocations = @()
+$foundOutsidePSModulePath = @()
 
-foreach ($basePath in $modulePaths) {
+foreach ($basePath in $allSearchPaths) {
     if (Test-Path $basePath) {
         # Case-insensitive search
         $modulePath = Join-Path $basePath $ModuleName
@@ -293,11 +305,20 @@ foreach ($basePath in $modulePaths) {
         if (Test-Path $modulePath) {
             $actualItem = Get-Item -Path $modulePath -ErrorAction SilentlyContinue
             if ($null -ne $actualItem) {
-                $foundLocations += [PSCustomObject]@{
-                    Path            = $actualItem.FullName
-                    ActualName      = $actualItem.Name
-                    ExpectedName    = $ModuleName
-                    CaseMismatch    = ($actualItem.Name -cne $ModuleName)
+                $isInPSModulePath = $modulePaths -contains $basePath
+
+                $location = [PSCustomObject]@{
+                    Path              = $actualItem.FullName
+                    ActualName        = $actualItem.Name
+                    ExpectedName      = $ModuleName
+                    CaseMismatch      = ($actualItem.Name -cne $ModuleName)
+                    InPSModulePath    = $isInPSModulePath
+                }
+
+                $foundLocations += $location
+
+                if (-not $isInPSModulePath) {
+                    $foundOutsidePSModulePath += $location
                 }
             }
         }
@@ -305,13 +326,21 @@ foreach ($basePath in $modulePaths) {
 }
 
 if ($foundLocations.Count -eq 0) {
-    Write-DiagnosticMessage "Module folder NOT found in any PSModulePath location" -Type Error
+    Write-DiagnosticMessage "Module folder NOT found in any location" -Type Error
     $issues += "Module files not found on disk"
 
     Write-Host ""
-    Write-Host "Searched in:" -ForegroundColor Yellow
+    Write-Host "Searched in PSModulePath:" -ForegroundColor Yellow
     foreach ($path in $modulePaths) {
         Write-Host "  - $path" -ForegroundColor Gray
+    }
+
+    Write-Host ""
+    Write-Host "Also searched common locations:" -ForegroundColor Yellow
+    foreach ($path in $additionalPaths) {
+        if ($modulePaths -notcontains $path) {
+            Write-Host "  - $path" -ForegroundColor Gray
+        }
     }
 
     $recommendations += "Install the module using: .\install-modulefromzip.ps1 -ModuleName '$ModuleName'"
@@ -319,15 +348,34 @@ if ($foundLocations.Count -eq 0) {
 else {
     Write-DiagnosticMessage "Found $($foundLocations.Count) module folder(s):" -Type Success
     foreach ($location in $foundLocations) {
+        $prefix = ""
+        if (-not $location.InPSModulePath) {
+            $prefix = "[WRONG LOCATION - NOT IN PSModulePath] "
+        }
+
         if ($location.CaseMismatch) {
-            Write-Host "  - $($location.Path) " -ForegroundColor Yellow -NoNewline
+            Write-Host "  - $prefix$($location.Path) " -ForegroundColor Yellow -NoNewline
             Write-Host "[CASE ISSUE: '$($location.ActualName)' should be '$($location.ExpectedName)']" -ForegroundColor Red
-            $issues += "Incorrect folder casing: '$($location.ActualName)'"
-            $recommendations += "Uninstall and reinstall with correct casing using the install script"
+        }
+        elseif (-not $location.InPSModulePath) {
+            Write-Host "  - $prefix$($location.Path)" -ForegroundColor Red
         }
         else {
             Write-Host "  - $($location.Path)" -ForegroundColor Gray
         }
+    }
+
+    # Add issues for modules found outside PSModulePath
+    if ($foundOutsidePSModulePath.Count -gt 0) {
+        $issues += "Module installed in wrong directory (not in PSModulePath)"
+        $recommendations += "Use automatic cleanup to remove and reinstall correctly"
+    }
+
+    # Add issues for case mismatches
+    $caseMismatchFound = $foundLocations | Where-Object { $_.CaseMismatch }
+    if ($caseMismatchFound) {
+        $issues += "Incorrect folder casing: '$($caseMismatchFound[0].ActualName)'"
+        $recommendations += "Use automatic cleanup to remove and reinstall with correct casing"
     }
 }
 
@@ -532,9 +580,20 @@ if ($recommendations.Count -gt 0) {
 $shouldOfferCleanup = $false
 if ($foundLocations.Count -gt 0) {
     # Offer cleanup if module has issues that prevent it from working
-    if (-not $moduleInPath -or $hasCaseMismatch) {
-        $shouldOfferCleanup = $true
+    $hasIssues = $false
+
+    # Check if any module is outside PSModulePath
+    if ($foundOutsidePSModulePath.Count -gt 0) {
+        $hasIssues = $true
     }
+
+    # Check for case mismatches
+    $hasCaseMismatchIssue = $foundLocations | Where-Object { $_.CaseMismatch }
+    if ($hasCaseMismatchIssue) {
+        $hasIssues = $true
+    }
+
+    $shouldOfferCleanup = $hasIssues
 }
 
 if ($shouldOfferCleanup) {
