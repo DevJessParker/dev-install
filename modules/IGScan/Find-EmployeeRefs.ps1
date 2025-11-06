@@ -18,7 +18,7 @@ function Write-GroupHeader([string]$title, [string]$color) {
   Write-Host $title -ForegroundColor $color
 }
 function Print-PathsFromMatches([System.Object[]]$matches) {
-  if ($matches -and $matches.Count -gt 0) {
+  if ($matches -and @($matches).Count -gt 0) {
     $paths = $matches | Select-Object -ExpandProperty Path -Unique | Sort-Object
     foreach ($p in $paths) { Write-Host ("  - " + $p) }
   }
@@ -29,7 +29,7 @@ function To-Proper([string]$s) {
   $s.Substring(0,1).ToUpper() + $s.Substring(1)
 }
 function Find-Literal([string]$text, [switch]$CaseSensitive, [string[]]$Paths) {
-  if ([string]::IsNullOrEmpty($text) -or -not $Paths -or $Paths.Count -eq 0) { return @() }
+  if ([string]::IsNullOrEmpty($text) -or -not $Paths -or @($Paths).Count -eq 0) { return @() }
   if ($CaseSensitive) {
     Select-String -Path $Paths -SimpleMatch $text -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue
   } else {
@@ -37,7 +37,7 @@ function Find-Literal([string]$text, [switch]$CaseSensitive, [string[]]$Paths) {
   }
 }
 function Find-Regex([string]$pattern, [switch]$CaseSensitive, [string[]]$Paths) {
-  if ([string]::IsNullOrEmpty($pattern) -or -not $Paths -or $Paths.Count -eq 0) { return @() }
+  if ([string]::IsNullOrEmpty($pattern) -or -not $Paths -or @($Paths).Count -eq 0) { return @() }
   if ($CaseSensitive) {
     Select-String -Path $Paths -Pattern $pattern -CaseSensitive -AllMatches:$false -List -ErrorAction SilentlyContinue
   } else {
@@ -139,14 +139,14 @@ foreach ($f in $allCandidates) {
 }
 Write-Progress -Activity "Enumerating files" -Completed
 
-if (-not $allFiles -or $allFiles.Count -eq 0) {
+if (-not $allFiles -or @($allFiles).Count -eq 0) {
   Write-Host "No candidate files found to scan under $RootPath (after exclusions, size limit, and extension filter)." -ForegroundColor Yellow
   exit 0
 }
 
 function Invoke-ChunkedSearch([scriptblock]$SearchBlock, [string[]]$Files, [string]$label) {
   $batch = 500
-  $total = $Files.Count
+  $total = @($Files).Count
   $results = @()
   for ($i = 0; $i -lt $total; $i += $batch) {
     $end = [Math]::Min($i + $batch, $total)
@@ -270,7 +270,7 @@ if ($crit_Proper) { Write-Host ('- Instances of "' + $phraseProper + '"'); Print
 if ($crit_Lower)  { Write-Host ('- Instances of "' + $phraseLower  + '"'); Print-PathsFromMatches $crit_Lower }
 
 Write-GroupHeader "Unknown Email" 'Red'
-if ($unknownEmailMatches -and $unknownEmailMatches.Count -gt 0) {
+if ($unknownEmailMatches -and @($unknownEmailMatches).Count -gt 0) {
   $byPath = $unknownEmailMatches | Group-Object Path
   foreach ($g in $byPath) { Write-Host ("- " + $g.Name) }
 }
@@ -279,7 +279,7 @@ Write-GroupHeader "IG Solutions Reference" 'Blue'
 $igCombined = @()
 if ($ig_refs)  { $igCombined += $ig_refs }
 if ($ig_refs2) { $igCombined += $ig_refs2 }
-if ($igCombined.Count -gt 0) {
+if (@($igCombined).Count -gt 0) {
   Write-Host ('- Instances of "' + $usernameLower + '@igsolutions.com"')
   Print-PathsFromMatches $igCombined
 }
@@ -288,7 +288,7 @@ Write-GroupHeader "Intelliguard Reference" 'Blue'
 $ihCombined = @()
 if ($ih_refs)  { $ihCombined += $ih_refs }
 if ($ih_refs2) { $ihCombined += $ih_refs2 }
-if ($ihCombined.Count -gt 0) {
+if (@($ihCombined).Count -gt 0) {
   Write-Host ('- Instances of "' + $usernameLower + '@intelliguardhealth.com"')
   Print-PathsFromMatches $ihCombined
 }
