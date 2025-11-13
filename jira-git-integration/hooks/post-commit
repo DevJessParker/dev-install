@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""
+Post-Commit Git Hook
+Automatically updates Jira when commits are made
+"""
+
+import sys
+import os
+import subprocess
+from pathlib import Path
+
+# Add lib directory to path
+lib_path = Path(__file__).parent.parent / 'lib'
+sys.path.insert(0, str(lib_path))
+
+from jira_client import JiraClient
+from smart_commit_parser import SmartCommitParser
+
+
+def get_commit_info():
+    """Get information about the latest commit"""
+    try:
+        # Get commit hash
+        commit_hash = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        # Get commit message
+        commit_message = subprocess.check_output(
+            ['git', 'log', '-1', '--pretty=%B'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        # Get author
+        author = subprocess.check_output(
+            ['git', 'log', '-1', '--pretty=%an <%ae>'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        # Get date
+        date = subprocess.check_output(
+            ['git', 'log', '-1', '--pretty=%ad', '--date=iso'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        # Get stats
+        stats = subprocess.check_output(
+            ['git', 'diff-tree', '--no-commit-id', '--numstat', '-r', 'HEAD'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        # Parse stats
+        files_changed = 0
+        insertions = 0
+        deletions = 0
+
+        for line in stats.split('\n'):
+            if line:
+                parts = line.split('\t')
+                if len(parts) >= 3:
+                    files_changed += 1
+                    try:
+                        insertions += int(parts[0]) if parts[0] != '-' else 0
+                        deletions += int(parts[1]) if parts[1] != '-' else 0
+                    except ValueError:
+                        pass
+
+        # Get branch
+        branch = subprocess.check_output(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        return {
+            'hash': commit_hash,
+            'message': commit_message,
+            'author': author,
+            'date': date,
+            'files_changed': files_changed,
+            'insertions': insertions,
+            'deletions': deletions,
+            'branch': branch
+        }
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error getting commit info: {e}")
+        return None
+
+
+def get_repo_url():
+    """Get remote repository URL"""
+    try:
+        remote_url = subprocess.check_output(
+            ['git', 'config', '--get', 'remote.origin.url'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        # Convert SSH to HTTPS for display
+        if remote_url.startswith('git@'):
+            # git@bitbucket.org:user/repo.git -> https://bitbucket.org/user/repo
+            remote_url = remote_url.replace(':', '/').replace('git@', 'https://')
+            if remote_url.endswith('.git'):
+                remote_url = remote_url[:-4]
+
+        return remote_url
+
+    except subprocess.CalledProcessError:
+        return None
+
+
+def main():
+    """Main hook execution"""
+    # Check if hook is disabled
+    if os.getenv('JIRA_HOOK_DISABLED') == '1':
+        sys.exit(0)
+
+    # Get commit info
+    commit_info = get_commit_info()
+    if not commit_info:
+        sys.exit(0)
+
+    # Parse commit message
+    parser = SmartCommitParser()
+    smart_commit = parser.parse(commit_info['message'])
+
+    # If no issue keys found, try branch name
+    if not smart_commit.issue_keys:
+        smart_commit.issue_keys = parser.extract_from_branch(commit_info['branch'])
+
+    # If still no issue keys, nothing to do
+    if not smart_commit.issue_keys:
+        sys.exit(0)
+
+    try:
+        # Initialize Jira client
+        client = JiraClient()
+
+        # Get repository URL
+        repo_url = get_repo_url()
+
+        # Process each issue
+        for issue_key in smart_commit.issue_keys:
+            print(f"📝 Updating Jira issue: {issue_key}")
+
+            # Create commit comment
+            commit_url = f"{repo_url}/commits/{commit_info['hash']}" if repo_url else None
+            comment_text = parser.format_commit_info(
+                commit_info['hash'],
+                commit_info['author'],
+                commit_info['date'],
+                smart_commit.message,
+                commit_info['files_changed'],
+                commit_info['insertions'],
+                commit_info['deletions']
+            )
+
+            if commit_url:
+                comment_text += f"\n[View Commit]({commit_url})"
+
+            # Add commit comment to Jira
+            result = client.add_comment(issue_key, comment_text)
+            if result:
+                print(f"  ✓ Added commit comment")
+
+            # Add remote link to commit
+            if commit_url:
+                link_result = client.create_remote_link(
+                    issue_key,
+                    commit_url,
+                    f"Commit {commit_info['hash'][:7]}",
+                    smart_commit.message
+                )
+                if link_result:
+                    print(f"  ✓ Linked commit")
+
+            # Process smart commit commands
+            if smart_commit.comment:
+                client.add_comment(issue_key, smart_commit.comment)
+                print(f"  ✓ Added comment: {smart_commit.comment[:50]}...")
+
+            if smart_commit.time_spent:
+                work_comment = f"Work from commit {commit_info['hash'][:7]}: {smart_commit.message}"
+                client.log_work(issue_key, smart_commit.time_spent, work_comment)
+                print(f"  ✓ Logged time: {smart_commit.time_spent}")
+
+            if smart_commit.transition:
+                transition_result = client.transition_issue(issue_key, smart_commit.transition)
+                if transition_result:
+                    print(f"  ✓ Transitioned to: {smart_commit.transition}")
+
+        print(f"✨ Successfully updated {len(smart_commit.issue_keys)} issue(s)")
+
+    except ValueError as e:
+        # Jira credentials not configured
+        print(f"⚠️  Jira not configured: {e}")
+        print("   Set JIRA_SITE, JIRA_EMAIL, and JIRA_API_TOKEN environment variables")
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"⚠️  Error updating Jira: {e}")
+        # Don't fail the commit
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()

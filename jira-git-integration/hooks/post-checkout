@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""
+Post-Checkout Git Hook
+Updates Jira when switching branches (e.g., start work on ticket)
+"""
+
+import sys
+import os
+import subprocess
+from pathlib import Path
+
+# Add lib directory to path
+lib_path = Path(__file__).parent.parent / 'lib'
+sys.path.insert(0, str(lib_path))
+
+from jira_client import JiraClient
+from smart_commit_parser import SmartCommitParser
+
+
+def get_branch_info(new_branch_ref):
+    """Get information about the new branch"""
+    try:
+        # Get branch name
+        branch_name = subprocess.check_output(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        # Get author from git config
+        author = subprocess.check_output(
+            ['git', 'config', 'user.name'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        email = subprocess.check_output(
+            ['git', 'config', 'user.email'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+
+        return {
+            'branch': branch_name,
+            'author': f"{author} <{email}>",
+            'ref': new_branch_ref
+        }
+
+    except subprocess.CalledProcessError as e:
+        print(f"Error getting branch info: {e}")
+        return None
+
+
+def main():
+    """Main hook execution"""
+    # Hook arguments: <previous-head-ref> <new-head-ref> <branch-flag>
+    if len(sys.argv) < 4:
+        sys.exit(0)
+
+    prev_ref = sys.argv[1]
+    new_ref = sys.argv[2]
+    branch_flag = sys.argv[3]
+
+    # Only process branch checkouts (flag = 1)
+    if branch_flag != '1':
+        sys.exit(0)
+
+    # Check if hook is disabled
+    if os.getenv('JIRA_HOOK_DISABLED') == '1':
+        sys.exit(0)
+
+    # Get branch info
+    branch_info = get_branch_info(new_ref)
+    if not branch_info:
+        sys.exit(0)
+
+    # Parse branch name for issue keys
+    parser = SmartCommitParser()
+    issue_keys = parser.extract_from_branch(branch_info['branch'])
+
+    # If no issue keys, nothing to do
+    if not issue_keys:
+        sys.exit(0)
+
+    # Check if we should auto-transition (opt-in via environment variable)
+    auto_transition = os.getenv('JIRA_AUTO_TRANSITION_ON_BRANCH', '').lower() == 'true'
+
+    try:
+        # Initialize Jira client
+        client = JiraClient()
+
+        # Process each issue
+        for issue_key in issue_keys:
+            print(f"📝 Updating Jira issue: {issue_key}")
+
+            # Add comment about branch checkout
+            comment = f"**Branch Checkout**\n"
+            comment += f"Branch: `{branch_info['branch']}`\n"
+            comment += f"Developer: {branch_info['author']}"
+
+            result = client.add_comment(issue_key, comment)
+            if result:
+                print(f"  ✓ Added branch checkout comment")
+
+            # Auto-transition to "In Progress" if enabled
+            if auto_transition:
+                # Check current status first
+                issue = client.get_issue(issue_key)
+                if issue:
+                    current_status = issue['fields']['status']['name']
+                    print(f"  Current status: {current_status}")
+
+                    # Only transition if not already in progress
+                    if current_status.lower() not in ['in progress', 'in review', 'done', 'resolved']:
+                        transition_result = client.transition_issue(issue_key, 'In Progress')
+                        if transition_result:
+                            print(f"  ✓ Transitioned to: In Progress")
+                        else:
+                            print(f"  ⚠️  Could not transition (check workflow)")
+
+        print(f"✨ Successfully updated {len(issue_keys)} issue(s)")
+
+    except ValueError as e:
+        # Jira credentials not configured (silent fail)
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"⚠️  Error updating Jira: {e}")
+        # Don't fail the checkout
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()

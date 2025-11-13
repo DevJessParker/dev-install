@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""
+Commit-Msg Git Hook
+Validates commit messages and smart commit syntax
+"""
+
+import sys
+import os
+from pathlib import Path
+
+# Add lib directory to path
+lib_path = Path(__file__).parent.parent / 'lib'
+sys.path.insert(0, str(lib_path))
+
+from smart_commit_parser import SmartCommitParser
+
+
+def main():
+    """Main hook execution"""
+    # Check if validation is disabled
+    if os.getenv('JIRA_COMMIT_VALIDATION_DISABLED') == '1':
+        sys.exit(0)
+
+    # Hook arguments: <commit-msg-file>
+    if len(sys.argv) < 2:
+        sys.exit(0)
+
+    commit_msg_file = sys.argv[1]
+
+    # Read commit message
+    try:
+        with open(commit_msg_file, 'r') as f:
+            commit_message = f.read()
+    except Exception as e:
+        print(f"Error reading commit message: {e}")
+        sys.exit(0)
+
+    # Remove comments for validation
+    lines = commit_message.split('\n')
+    message_lines = [line for line in lines if not line.strip().startswith('#')]
+    clean_message = '\n'.join(message_lines).strip()
+
+    # Skip empty messages
+    if not clean_message:
+        sys.exit(0)
+
+    # Parse commit message
+    parser = SmartCommitParser()
+    smart_commit = parser.parse(clean_message)
+
+    # Validation flags
+    require_issue_key = os.getenv('JIRA_REQUIRE_ISSUE_KEY', '').lower() == 'true'
+    warn_no_issue_key = os.getenv('JIRA_WARN_NO_ISSUE_KEY', 'true').lower() == 'true'
+
+    # Check for issue key
+    if not smart_commit.issue_keys:
+        if require_issue_key:
+            print("❌ Commit message must include a Jira issue key (e.g., PHARM-456)")
+            print("\nFormat: [ISSUE-KEY] type: description")
+            print("Example: [PHARM-456] feat: add package filtering")
+            print("\nTo bypass this check temporarily:")
+            print("  JIRA_REQUIRE_ISSUE_KEY=false git commit -m \"your message\"")
+            sys.exit(1)
+        elif warn_no_issue_key:
+            print("⚠️  Warning: No Jira issue key found in commit message")
+            print("   Consider adding one: [ISSUE-KEY] your message")
+
+    # Validate smart commit syntax
+    if smart_commit.time_spent:
+        if not parser.validate_time_format(smart_commit.time_spent):
+            print(f"❌ Invalid time format: {smart_commit.time_spent}")
+            print("\nValid formats:")
+            print("  2h 30m  (2 hours 30 minutes)")
+            print("  1d 4h   (1 day 4 hours)")
+            print("  3w 2d   (3 weeks 2 days)")
+            print("\nUnits: w (weeks), d (days), h (hours), m (minutes)")
+            sys.exit(1)
+
+        # Show estimated time for confirmation
+        minutes = parser.parse_time_to_minutes(smart_commit.time_spent)
+        hours = minutes / 60
+        print(f"✓ Time logging: {smart_commit.time_spent} (~{hours:.1f} hours)")
+
+    # Show what will be executed
+    if parser.is_smart_commit(clean_message):
+        print("\n📝 Smart Commit Actions:")
+        if smart_commit.issue_keys:
+            print(f"   Issues: {', '.join(smart_commit.issue_keys)}")
+        if smart_commit.comment:
+            print(f"   Comment: {smart_commit.comment[:60]}...")
+        if smart_commit.time_spent:
+            print(f"   Log Time: {smart_commit.time_spent}")
+        if smart_commit.transition:
+            print(f"   Transition: {smart_commit.transition}")
+
+    # Validate commit message format (optional)
+    validate_format = os.getenv('JIRA_VALIDATE_COMMIT_FORMAT', '').lower() == 'true'
+    if validate_format:
+        # Check conventional commit format: type: description
+        # Common types: feat, fix, docs, style, refactor, test, chore
+        conventional_types = ['feat', 'fix', 'docs', 'style', 'refactor', 'test', 'chore', 'perf', 'ci', 'build', 'revert']
+
+        # Extract first line
+        first_line = clean_message.split('\n')[0]
+
+        # Remove issue key for format check
+        line_without_key = first_line
+        for key in smart_commit.issue_keys:
+            line_without_key = line_without_key.replace(f"[{key}]", "").strip()
+            line_without_key = line_without_key.replace(key, "").strip()
+
+        # Check for type: format
+        if ':' in line_without_key:
+            commit_type = line_without_key.split(':')[0].strip().lower()
+            if commit_type not in conventional_types:
+                print(f"⚠️  Warning: Unconventional commit type '{commit_type}'")
+                print(f"   Recommended types: {', '.join(conventional_types)}")
+        else:
+            print("⚠️  Warning: Commit message should follow format: type: description")
+            print("   Example: feat: add new feature")
+
+    sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()

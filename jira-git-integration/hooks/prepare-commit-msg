@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""
+Prepare-Commit-Msg Git Hook
+Automatically prepends issue key to commit messages
+"""
+
+import sys
+import os
+import subprocess
+from pathlib import Path
+
+# Add lib directory to path
+lib_path = Path(__file__).parent.parent / 'lib'
+sys.path.insert(0, str(lib_path))
+
+from smart_commit_parser import SmartCommitParser
+
+
+def get_current_branch():
+    """Get current branch name"""
+    try:
+        branch = subprocess.check_output(
+            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            stderr=subprocess.STDOUT
+        ).decode().strip()
+        return branch
+    except subprocess.CalledProcessError:
+        return None
+
+
+def main():
+    """Main hook execution"""
+    # Check if hook is disabled
+    if os.getenv('JIRA_PREPARE_COMMIT_DISABLED') == '1':
+        sys.exit(0)
+
+    # Hook arguments: <commit-msg-file> <commit-source> <sha1>
+    if len(sys.argv) < 2:
+        sys.exit(0)
+
+    commit_msg_file = sys.argv[1]
+    commit_source = sys.argv[2] if len(sys.argv) > 2 else None
+
+    # Don't modify message if it's from merge, squash, or amended commit
+    if commit_source in ['merge', 'squash', 'commit']:
+        sys.exit(0)
+
+    # Read existing commit message
+    try:
+        with open(commit_msg_file, 'r') as f:
+            original_message = f.read()
+    except Exception as e:
+        print(f"Error reading commit message: {e}")
+        sys.exit(0)
+
+    # Skip if message is empty or is a comment
+    if not original_message.strip() or original_message.strip().startswith('#'):
+        pass  # Will add template below
+    else:
+        # Check if message already has issue key
+        parser = SmartCommitParser()
+        existing_keys = parser.extract_issue_keys(original_message)
+        if existing_keys:
+            # Already has issue key, don't modify
+            sys.exit(0)
+
+    # Get branch name
+    branch = get_current_branch()
+    if not branch:
+        sys.exit(0)
+
+    # Extract issue keys from branch
+    parser = SmartCommitParser()
+    issue_keys = parser.extract_from_branch(branch)
+
+    if not issue_keys:
+        # No issue key in branch, add template
+        if os.getenv('JIRA_ADD_COMMIT_TEMPLATE', '').lower() == 'true':
+            template = """# Commit Message Template
+# Format: [ISSUE-KEY] type: description
+#
+# Types: feat, fix, docs, style, refactor, test, chore
+#
+# Smart commit examples:
+#   [PHARM-456] feat: add filtering #time 2h #in-review
+#   [PHARM-456] fix: bug fix #comment Fixed the issue #done
+#
+# Smart commands:
+#   #time <duration>    - Log work time (e.g., 2h 30m, 1d 4h)
+#   #comment <text>     - Add comment to issue
+#   #in-progress        - Move to In Progress
+#   #in-review          - Move to In Review
+#   #done              - Mark as Done
+#   #qa-ready          - Move to QA Ready
+"""
+            try:
+                with open(commit_msg_file, 'w') as f:
+                    f.write(template + '\n' + original_message)
+            except Exception as e:
+                print(f"Error writing template: {e}")
+        sys.exit(0)
+
+    # Prepend issue key to message
+    issue_prefix = f"[{issue_keys[0]}] "
+
+    try:
+        # If message is empty or only comments, add template
+        if not original_message.strip() or all(line.startswith('#') for line in original_message.split('\n') if line.strip()):
+            new_message = f"{issue_prefix}\n\n{original_message}"
+        else:
+            # Prepend to existing message
+            new_message = f"{issue_prefix}{original_message}"
+
+        with open(commit_msg_file, 'w') as f:
+            f.write(new_message)
+
+        print(f"✓ Added issue key {issue_keys[0]} to commit message")
+
+    except Exception as e:
+        print(f"Error updating commit message: {e}")
+        sys.exit(0)
+
+
+if __name__ == '__main__':
+    main()
